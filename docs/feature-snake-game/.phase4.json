@@ -1,0 +1,385 @@
+{
+  "step1": {
+    "difficultyScores": [
+      {
+        "module": "config",
+        "score": 1,
+        "reasoning": "Pure constant definitions, no logic, no classes. Direct mapping of configuration values from design doc. Zero complexity."
+      },
+      {
+        "module": "snake",
+        "score": 3,
+        "reasoning": "Core game logic. Implements move-and-grow combined operation, reverse-direction interception, boundary collision (coordinate range check), and self-collision (head in body[1:]). The tail-pop logic in move_and_grow and (-dx,-dy) rejection in change_direction are critical correctness points."
+      },
+      {
+        "module": "food",
+        "score": 2,
+        "reasoning": "Simple logic: compute set difference between all cells and occupied cells, random choice. Handles board-full (returns False for victory condition) and initial placeholder (-1,-1). No algorithmic complexity but must guarantee food never spawns on snake body."
+      },
+      {
+        "module": "renderer",
+        "score": 3,
+        "reasoning": "Encapsulates all Pygame drawing calls: layered rendering (background -> grid lines -> snake body -> snake head -> food -> HUD -> overlay), distinct head/body colors, semi-transparent game-over/victory overlay with centered text. Manages pygame.Surface, font, Rect positioning, and Clock FPS control. Pygame API familiarity impacts dev speed."
+      },
+      {
+        "module": "input_handler",
+        "score": 2,
+        "reasoning": "Pygame event queue traversal, arrow-key-to-direction-vector mapping, per-frame single-direction buffering (last valid key wins). Focus-lost/gained detection for auto-pause. Direction reversal interception delegated to Snake.change_direction. Moderate event-loop pattern but straightforward."
+      },
+      {
+        "module": "game",
+        "score": 2,
+        "reasoning": "Orchestration layer: wires components into main loop (tick -> process -> handle -> update -> render -> flip). Implements RUNNING/GAME_OVER/VICTORY three-state state machine. Handles restart (R key) resetting all components. No complex algorithms but loop step ordering is critical."
+      },
+      {
+        "module": "main",
+        "score": 1,
+        "reasoning": "Entry point: try/except ImportError for Pygame check, pygame.init(), Game instantiation, run(), pygame.quit() in finally. Approximately 5-8 lines of code."
+      }
+    ],
+    "overallComplexity": "medium",
+    "complexityRationale": "Classic snake game with well-understood logic. Design documents provide complete class interfaces, method signatures, data flows, and 6 key flow sequences — implementation is specification-driven. None of the 7 modules reach high complexity; snake (3/5) and renderer (3/5) are the most demanding due to precision requirements rather than algorithmic difficulty. The entire feature fits within a single small-to-medium iteration.",
+    "risks": [
+      {
+        "type": "dependency",
+        "severity": "low",
+        "description": "Pygame not installed — ImportError at startup",
+        "mitigation": "main.py catches ImportError with clear pip install hint and sys.exit(1). README documents prerequisite."
+      },
+      {
+        "type": "technical",
+        "severity": "low",
+        "description": "Focus-lost event (WINDOWEVENT_FOCUS_LOST) unsupported on some platforms",
+        "mitigation": "Designed graceful degradation: _paused stays False, game continues without crash. Acceptable experience degradation."
+      },
+      {
+        "type": "technical",
+        "severity": "low",
+        "description": "Self-collision timing: checking before vs. after move could cause false positives or missed detections on turn-into-self",
+        "mitigation": "Design specifies move-first-then-check order. head inserted at body[0] before collision check against body[1:] — correct per spec."
+      },
+      {
+        "type": "performance",
+        "severity": "low",
+        "description": "Food respawn on near-full board: random sampling over small remaining set could loop",
+        "mitigation": "Design uses set-difference approach (all_cells - occupied) rather than retry loop — O(n) guaranteed, no stochastic worst case."
+      }
+    ],
+    "priority": "P3",
+    "priorityRationale": "This is the sole feature of a new repository with no competing priorities. Self-contained with no external dependencies beyond Pygame. No other features depend on it, and it depends on nothing else. Can be scheduled flexibly within any iteration. P3 reflects its standalone nature — important but not time-critical.",
+    "effortEstimate": {
+      "min": 2,
+      "max": 3,
+      "unit": "person-day"
+    },
+    "dependencies": [
+      "Python 3.x runtime",
+      "Pygame library (pip install pygame)"
+    ],
+    "suggestedApproach": "Bottom-up build order: (1) config constants, (2) Snake class with unit tests for move/grow/collision, (3) Food class with respawn logic, (4) Renderer with mock Surface verification, (5) InputHandler with simulated events, (6) Game coordinator wiring all components, (7) main entry point. Testing focus: collision edge cases (single-cell snake, board-edge turns, rapid key presses), food generation on near-full board, and restart state consistency. Existing main.py skeleton can be discarded or refactored — the designed modular architecture supersedes it entirely.",
+    "documentPath": "docs/feature-snake-game/评估与排期.md",
+    "summary": "中等复杂度(medium)，7模块约20方法，Pygame桌面游戏。核心模块snake/renderer各3分，其余1-2分。风险低：仅依赖Pygame安装和平台焦点事件兼容性，均有降级方案。建议2-3人天，自底向上构建，优先覆盖碰撞边界测试。"
+  },
+  "step2": {
+    "tasks": [
+      {
+        "id": "T-001",
+        "title": "创建 config.py 常量模块",
+        "description": "定义窗口尺寸(800x600)、网格参数(CELL_SIZE=20, 40x30)、游戏参数(FPS=10, 初始蛇长3, 每个食物10分)、窗口标题、HUD高度(40px)。定义 COLORS 类含 BACKGROUND/SNAKE_BODY/SNAKE_HEAD/FOOD/GRID_LINE/TEXT/OVERLAY_BG 全部色值。",
+        "estimateHours": 0.5,
+        "dependencies": [],
+        "requiredSkills": [
+          "Python 基础"
+        ],
+        "module": "config",
+        "acceptanceCriteria": [
+          "所有常量值与设计规格一致",
+          "COLORS 类包含全部 7 个颜色定义",
+          "模块无需 Pygame 即可导入"
+        ]
+      },
+      {
+        "id": "T-002",
+        "title": "实现 Snake 类核心逻辑",
+        "description": "实现 __init__（网格中心水平3节、默认向右）、head/length property、move_and_grow(grow_flag) 合二为一操作（insert head + 条件 pop tail）、change_direction 反向拦截返回 bool、check_boundary_collision 边界检测、check_self_collision 自撞检测（head in body[1:]）、reset 恢复初始状态。编写碰撞和反向拦截的单元测试。",
+        "estimateHours": 4,
+        "dependencies": [
+          "T-001"
+        ],
+        "requiredSkills": [
+          "Python OOP",
+          "算法"
+        ],
+        "module": "snake",
+        "acceptanceCriteria": [
+          "蛇初始化为3节、水平中心、向右移动",
+          "move_and_grow(True) 增长1节，move_and_grow(False) 保持长度",
+          "change_direction 拒绝反向输入，返回 False",
+          "check_boundary_collision 对越界蛇头返回 True",
+          "check_self_collision 对撞自身返回 True",
+          "reset 恢复初始 body 和 direction"
+        ]
+      },
+      {
+        "id": "T-003",
+        "title": "实现 Food 类",
+        "description": "实现 __init__（position 占位 (-1,-1)）、respawn(occupied_cells) 用集合差运算 all_cells - set(occupied_cells) 获取可用格并随机选取、reset() 重置占位。返回 bool：False 表示棋盘满即胜利条件。编写单测覆盖正常生成、满棋盘、不落占用格。",
+        "estimateHours": 2,
+        "dependencies": [
+          "T-001"
+        ],
+        "requiredSkills": [
+          "Python OOP",
+          "random 标准库"
+        ],
+        "module": "food",
+        "acceptanceCriteria": [
+          "respawn 随机选取不在 occupied_cells 中的格子",
+          "respawn 在全部格子被占时返回 False",
+          "position 初始值为 (-1, -1) 占位",
+          "reset 将 position 重置为 (-1, -1)"
+        ]
+      },
+      {
+        "id": "T-004",
+        "title": "实现 Renderer 渲染层",
+        "description": "封装所有 Pygame 绘制调用。实现 draw_background（填充背景+网格线）、draw_snake（尾到头绘制，蛇头用 HEAD 色与蛇身 BODY 色区分）、draw_food（检查占位 (-1,-1) 后才绘制）、draw_hud（顶部 Score 显示）、draw_game_over（半透明遮罩+居中 GAME OVER + 得分 + R/Q 提示）、draw_victory（YOU WIN + 得分）、draw_frame（按序调用各层绘制，根据 GameState 条件叠加遮罩）、tick（clock.tick 控制帧率）。验证视觉输出。",
+        "estimateHours": 3.5,
+        "dependencies": [
+          "T-001",
+          "T-002",
+          "T-003"
+        ],
+        "requiredSkills": [
+          "Pygame 绘制 API"
+        ],
+        "module": "renderer",
+        "acceptanceCriteria": [
+          "draw_background 填充背景色",
+          "draw_snake 蛇头与蛇身颜色不同",
+          "draw_food 跳过 (-1,-1) 占位不绘制",
+          "draw_hud 显示当前分数",
+          "draw_game_over 渲染半透明遮罩和得分",
+          "draw_victory 渲染 YOU WIN 遮罩",
+          "draw_frame 按正确顺序调用所有绘制方法"
+        ]
+      },
+      {
+        "id": "T-005",
+        "title": "实现 InputHandler 事件处理",
+        "description": "遍历 Pygame 事件队列，产出统一命令字典。实现 per-frame 单方向缓冲策略（同帧多方向键取最后有效者）、方向键到方向向量映射及反向拦截、QUIT 事件处理、R/Q 键仅在 GAME_OVER/VICTORY 时生效、焦点丢失/恢复检测控制暂停标志。",
+        "estimateHours": 2.5,
+        "dependencies": [
+          "T-001"
+        ],
+        "requiredSkills": [
+          "Pygame 事件 API"
+        ],
+        "module": "input_handler",
+        "acceptanceCriteria": [
+          "方向键映射为正确方向向量并拦截反向",
+          "QUIT 事件返回 quit 动作",
+          "R 键仅 GAME_OVER/VICTORY 时返回 restart",
+          "Q 键仅 GAME_OVER/VICTORY 时返回 quit",
+          "同帧多个方向键取最后有效者",
+          "焦点丢失暂停，焦点恢复继续"
+        ]
+      },
+      {
+        "id": "T-006",
+        "title": "实现 Game 协调器与状态机",
+        "description": "定义 GameState 枚举 (RUNNING/GAME_OVER/VICTORY)。实现 Game 类：__init__ 创建窗口+实例化全部组件+生成首个食物、run 主循环（tick -> process_events -> _handle_command -> _update -> draw_frame -> flip）、_handle_command 分发 quit/restart/direction、_update（判定食物碰撞 -> move_and_grow -> 加分+respawn -> 边界/自撞检测 -> 状态迁移）、reset 全部组件重置。",
+        "estimateHours": 3,
+        "dependencies": [
+          "T-002",
+          "T-003",
+          "T-004",
+          "T-005"
+        ],
+        "requiredSkills": [
+          "Pygame",
+          "状态机模式"
+        ],
+        "module": "game",
+        "acceptanceCriteria": [
+          "游戏窗口正确标题和尺寸启动",
+          "主循环按固定 FPS 运行",
+          "食物碰撞触发增长和加分",
+          "边界碰撞触发 GAME_OVER",
+          "自撞触发 GAME_OVER",
+          "棋盘满触发 VICTORY",
+          "R 键重置所有状态恢复初始"
+        ]
+      },
+      {
+        "id": "T-007",
+        "title": "实现 main.py 入口点",
+        "description": "实现 main() 函数：try import pygame 捕获 ImportError 输出 pip install 提示 + sys.exit(1)、pygame.init()、实例化 Game、调用 run()、finally 中 pygame.quit()。添加 __name__ == '__main__' 保护。创建 requirements.txt (pygame>=2.0)。",
+        "estimateHours": 1,
+        "dependencies": [
+          "T-006"
+        ],
+        "requiredSkills": [
+          "Python 入口点",
+          "异常处理"
+        ],
+        "module": "main",
+        "acceptanceCriteria": [
+          "Pygame 缺失时显示安装提示并退出",
+          "Pygame 可用时正常启动游戏",
+          "退出时调用 pygame.quit()",
+          "requirements.txt 包含 pygame>=2.0"
+        ]
+      },
+      {
+        "id": "T-008",
+        "title": "编写 README 与项目文档",
+        "description": "写 README.md：项目简介、安装步骤 (pip install -r requirements.txt)、运行方式 (python main.py)、操作说明 (方向键移动、R 重新开始、Q 退出)、文件结构说明。",
+        "estimateHours": 1,
+        "dependencies": [],
+        "requiredSkills": [
+          "Markdown"
+        ],
+        "module": "docs",
+        "acceptanceCriteria": [
+          "README 包含安装说明",
+          "README 包含运行命令",
+          "README 包含操作键位说明"
+        ]
+      },
+      {
+        "id": "T-009",
+        "title": "集成测试与边界验证",
+        "description": "按验收标准逐条验证全部 9 个 AC。测试 9 个边界情况 (E-001~E-009)：满棋盘胜利、边界转向、单节蛇无自撞、快速连按、焦点丢失、窗口关闭、食物不落蛇身、respawn 兜底、Pygame 缺失提示。检查碰撞精度（网格级无误判漏判）。测试重启流程一致性。检查性能（FPS 稳定性、内存无泄漏）。",
+        "estimateHours": 3,
+        "dependencies": [
+          "T-007"
+        ],
+        "requiredSkills": [
+          "手工测试",
+          "边界分析"
+        ],
+        "module": "testing",
+        "acceptanceCriteria": [
+          "全部 9 条验收标准验证通过",
+          "全部 9 个边界情况覆盖",
+          "FPS 偏差不超过 ±20%",
+          "内存占用稳定无泄漏",
+          "重启循环状态一致"
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "name": "M1 核心实体就绪",
+        "description": "Snake 类和 Food 类实现完毕并通过单元测试。纯逻辑层可在无 Pygame 环境下独立验证正确性。",
+        "targetTasks": [
+          "T-001",
+          "T-002",
+          "T-003"
+        ]
+      },
+      {
+        "name": "M2 表现与输入就绪",
+        "description": "Renderer 和 InputHandler 实现完毕。渲染层能绘制蛇/食物/HUD/遮罩，输入层生成正确的命令字典。",
+        "targetTasks": [
+          "T-004",
+          "T-005"
+        ]
+      },
+      {
+        "name": "M3 可玩原型",
+        "description": "Game 协调器和 main 入口集成完毕。游戏可启动、可操控、可判定输赢。",
+        "targetTasks": [
+          "T-006",
+          "T-007"
+        ]
+      },
+      {
+        "name": "M4 发布就绪",
+        "description": "文档完善，全部边界测试通过，验收标准全覆盖。",
+        "targetTasks": [
+          "T-008",
+          "T-009"
+        ]
+      }
+    ],
+    "implementationOrder": [
+      {
+        "phase": "Phase 1: 基础设施",
+        "taskIds": [
+          "T-001"
+        ],
+        "rationale": "config.py 是所有模块的基础依赖，定义全部共享常量。必须最先完成，后续模块才能引用 COLORS、GRID_COLS/ROWS、FPS 等值。"
+      },
+      {
+        "phase": "Phase 2: 核心逻辑层 (可并行)",
+        "taskIds": [
+          "T-002",
+          "T-003"
+        ],
+        "rationale": "Snake 和 Food 均为纯逻辑组件，无 Pygame 依赖，均仅依赖 T-001 config，可并行开发。Snake 碰撞检测是游戏核心，Food 的集合差算法是胜利条件判定点。完成后可进行逻辑层单元测试，无需图形环境。"
+      },
+      {
+        "phase": "Phase 3: 表现与输入层 (可并行)",
+        "taskIds": [
+          "T-004",
+          "T-005"
+        ],
+        "rationale": "Renderer 需要 T-002(Snake) 和 T-003(Food) 的类定义来遍历 body 和读取 position。InputHandler 仅依赖 T-001 config。两者作为独立 I/O 层可并行实现。"
+      },
+      {
+        "phase": "Phase 4: 集成协调层",
+        "taskIds": [
+          "T-006"
+        ],
+        "rationale": "Game 依赖全部 5 个下层模块，需在前 3 个阶段全部就绪后才能正确连接。主循环步骤顺序至关重要，三态状态机迁移逻辑一次性实现。"
+      },
+      {
+        "phase": "Phase 5: 入口与发布 (可部分并行)",
+        "taskIds": [
+          "T-007",
+          "T-008"
+        ],
+        "rationale": "main.py 依赖 T-006 Game 类，需在集成完成后编写。README 与代码无关，可与 T-007 并行或在完成后同步交付。"
+      },
+      {
+        "phase": "Phase 6: 质量验证",
+        "taskIds": [
+          "T-009"
+        ],
+        "rationale": "全部代码完成后进行系统性验收测试。覆盖 9 条 AC、9 个边界情况、4 项风险缓解验证。这是发现集成缺陷和边界遗漏的最后防线。"
+      }
+    ],
+    "riskMitigationTasks": [
+      {
+        "risk": "R-001: Pygame 未安装导致 ImportError",
+        "mitigationTask": "T-007 main.py 中实现 try/except ImportError，输出 pip install 提示并 sys.exit(1)；T-008 README 明确说明 pip install -r requirements.txt 前置步骤",
+        "timing": "during-dev"
+      },
+      {
+        "risk": "R-002: 焦点丢失事件部分平台不支持",
+        "mitigationTask": "T-005 设计为优雅降级：_paused 默认 False，不支持焦点事件时保持 False 不崩溃；T-009 在目标平台上验证 Alt+Tab 行为",
+        "timing": "during-dev"
+      },
+      {
+        "risk": "R-003: 自撞检测时序错误",
+        "mitigationTask": "T-002 move_and_grow 严格遵循先 insert head 后 body.pop 顺序，check_self_collision 对 body[1:] 检查；编写转向自撞场景的针对性单元测试",
+        "timing": "during-dev"
+      },
+      {
+        "risk": "R-004: 棋盘接近满时食物随机采样可能循环",
+        "mitigationTask": "T-003 Food.respawn 使用集合差算法 (all_cells - occupied) 一次性获取全部可用格，保证 O(n)；T-009 模拟蛇身占 1199/1200 格验证边界",
+        "timing": "during-dev"
+      }
+    ],
+    "totalEffortSummary": {
+      "totalPersonDays": 2.56,
+      "recommendedTeamSize": 1,
+      "estimatedCalendarDays": 4,
+      "confidenceLevel": "high"
+    },
+    "documentPath": "/home/tang/Workspace/snake/docs/feature-snake-game/评估与排期.md",
+    "summary": "9个任务共20.5h(2.56人天)，4个里程碑。单人3-4日历天可交付。置信度高——经典游戏设计规格完整，逐模块自底向上构建，依赖链清晰无阻塞点。"
+  }
+}
