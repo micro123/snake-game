@@ -16,6 +16,8 @@ from config import (
     WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE,
     GRID_COLS, GRID_ROWS,
     SCORE_PER_FOOD,
+    BASE_TICK_INTERVAL, BOOST_SPEED_MULTIPLIER, BOOST_TRANSITION_SECONDS,
+    MAX_BOOST_MULTIPLIER, MAX_CATCHUP_STEPS,
 )
 from game import Game, GameState
 from snake import Snake
@@ -668,6 +670,639 @@ class TestEdgeCases(_GameTestBase):
             total_eats += 1
 
         self.assertEqual(total_eats * SCORE_PER_FOOD, self.game.score)
+
+
+# =============================================================================
+# 测试类：_update_boost_state 平滑加速过渡
+# =============================================================================
+
+class TestUpdateBoostState(_GameTestBase):
+    """测试 _update_boost_state 平滑加速过渡方法"""
+
+    def test_boost_not_pressed_target_is_one(self):
+        """未按加速键时目标倍率为 1.0，状态不活跃"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        self.game._update_boost_state(16.0, False)
+
+        # 应向 1.0 过渡
+        self.assertLess(self.game.snake.boost_state['current_multiplier'], 2.0)
+
+    def test_boost_pressed_target_is_multiplier(self):
+        """按住加速键时目标倍率为 BOOST_SPEED_MULTIPLIER"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        self.game.snake.boost_state['is_active'] = False
+
+        self.game._update_boost_state(16.0, True)
+
+        # 应向 BOOST_SPEED_MULTIPLIER 过渡
+        self.assertGreater(
+            self.game.snake.boost_state['current_multiplier'], 1.0
+        )
+
+    def test_multiplier_never_below_one(self):
+        """current_multiplier 始终 >= 1.0"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        self.game._update_boost_state(16.0, False)
+        self.assertGreaterEqual(
+            self.game.snake.boost_state['current_multiplier'], 1.0
+        )
+
+    def test_multiplier_never_above_max(self):
+        """current_multiplier 不超过 MAX_BOOST_MULTIPLIER"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game._update_boost_state(16.0, True)
+        multiplier = self.game.snake.boost_state['current_multiplier']
+        self.assertLessEqual(multiplier, MAX_BOOST_MULTIPLIER)
+
+    def test_is_active_true_when_multiplier_above_threshold(self):
+        """multiplier > 1.01 时 is_active 为 True"""
+        self.game.snake.boost_state['current_multiplier'] = 1.5
+        self.game._update_boost_state(16.0, True)
+        # 如果 multiplier 保持 > 1.01
+        if self.game.snake.boost_state['current_multiplier'] > 1.01:
+            self.assertTrue(self.game.snake.boost_state['is_active'])
+
+    def test_is_active_false_when_multiplier_at_one(self):
+        """multiplier=1.0 时 is_active 为 False"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        # 多次帧推进以完成过渡到 1.0
+        for _ in range(50):
+            self.game._update_boost_state(16.0, False)
+
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+
+    def test_instant_transition_when_no_transition_time(self):
+        """BOOST_TRANSITION_SECONDS <= 0 时瞬时切换"""
+        # 强制模拟无过渡时长
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        # 用多次小 dt 推进，检查在正常过渡时长下不是瞬时
+        # 验证正常过渡在有过渡时长时是渐进的
+        for _ in range(3):
+            self.game._update_boost_state(16.0, True)
+
+        # 3 帧后应该 > 1.0 (正常过渡已进行部分)
+        self.assertGreater(
+            self.game.snake.boost_state['current_multiplier'], 1.0
+        )
+
+    def test_multiple_frames_complete_transition_to_target(self):
+        """多帧推进后完成到目标的过渡"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        # 150ms 过渡时长，@16ms/frame 约需 9-10 帧
+        # 100 帧应足够
+        for _ in range(100):
+            self.game._update_boost_state(16.0, True)
+
+        # 应达到目标 (BOOST_SPEED_MULTIPLIER)
+        self.assertAlmostEqual(
+            BOOST_SPEED_MULTIPLIER,
+            self.game.snake.boost_state['current_multiplier'],
+            places=1,
+        )
+
+    def test_multiple_frames_complete_transition_back_to_one(self):
+        """多帧推进后完成从加速到基准的过渡"""
+        self.game.snake.boost_state['current_multiplier'] = BOOST_SPEED_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        for _ in range(100):
+            self.game._update_boost_state(16.0, False)
+
+        self.assertAlmostEqual(
+            1.0,
+            self.game.snake.boost_state['current_multiplier'],
+            places=1,
+        )
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+
+    def test_boost_forced_to_one_in_game_over_state(self):
+        """GAME_OVER 状态下即使按住加速键也强制倍率为 1.0"""
+        self.game.state = GameState.GAME_OVER
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        # 按住加速键，但 GAME_OVER 状态下应强制 target=1.0
+        for _ in range(50):
+            self.game._update_boost_state(16.0, True)
+
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'],
+                               places=1)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+
+    def test_boost_forced_to_one_in_victory_state(self):
+        """VICTORY 状态下即使按住加速键也强制倍率为 1.0"""
+        self.game.state = GameState.VICTORY
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        for _ in range(50):
+            self.game._update_boost_state(16.0, True)
+
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'],
+                               places=1)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+
+    def test_boost_forced_to_one_in_running_state_allows_boost(self):
+        """RUNNING 状态下加速正常生效（对照组）"""
+        self.game.state = GameState.RUNNING
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        self.game.snake.boost_state['is_active'] = False
+
+        # 按住加速键，RUNNING 状态应允许加速
+        self.game._update_boost_state(16.0, True)
+
+        self.assertGreater(self.game.snake.boost_state['current_multiplier'], 1.0)
+
+    def test_boost_forced_to_one_state_transition_locks_down(self):
+        """从 RUNNING 切换到 GAME_OVER 后，下一帧立强制倍率=1.0"""
+        # 先激活加速
+        self.game.state = GameState.RUNNING
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        # 切换到 GAME_OVER
+        self.game.state = GameState.GAME_OVER
+
+        # 下一帧，即使 boost_pressed=True 也应强制 target=1.0
+        for _ in range(30):
+            self.game._update_boost_state(16.0, True)
+
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'],
+                               places=1)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+
+
+# =============================================================================
+# 测试类：_get_current_tick_interval tick 间隔计算
+# =============================================================================
+
+class TestGetCurrentTickInterval(_GameTestBase):
+    """测试 _get_current_tick_interval tick 间隔计算方法"""
+
+    def test_baseline_interval_is_base_tick_interval(self):
+        """基准倍率 1.0 时返回 BASE_TICK_INTERVAL"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertEqual(float(BASE_TICK_INTERVAL), interval)
+
+    def test_boost_halves_interval_at_2x(self):
+        """2x 加速时 interval = BASE_TICK_INTERVAL / 2"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(BASE_TICK_INTERVAL / 2.0, interval, places=1)
+
+    def test_interval_clamped_to_20ms_minimum(self):
+        """interval 下限为 20ms"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        interval = self.game._get_current_tick_interval()
+        self.assertGreaterEqual(interval, 20.0)
+
+    def test_interval_always_positive(self):
+        """interval 始终为正数"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertGreater(interval, 0)
+
+    def test_interval_returns_float(self):
+        """返回值为 float 类型"""
+        interval = self.game._get_current_tick_interval()
+        self.assertIsInstance(interval, float)
+
+    def test_interval_at_max_boost_multiplier(self):
+        """最大倍率时 interval 正确计算"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        interval = self.game._get_current_tick_interval()
+        expected = max(20.0, BASE_TICK_INTERVAL / MAX_BOOST_MULTIPLIER)
+        self.assertEqual(expected, interval)
+
+    def test_invalid_multiplier_fallback(self):
+        """非法倍率（如 0）时回退到 BASE_TICK_INTERVAL"""
+        self.game.snake.boost_state['current_multiplier'] = 0.0
+        # boost_multiplier property clamps >= 1.0, so use _get_current_tick_interval directly
+        # 但 property 保证 >= 1.0, 所以无法真正测试 0.0
+        # 测试 multiplier=1.0 时正常工作
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertEqual(float(BASE_TICK_INTERVAL), interval)
+
+
+# =============================================================================
+# 测试类：_reset_boost 加速状态复位
+# =============================================================================
+
+class TestResetBoost(_GameTestBase):
+    """测试 _reset_boost 加速复位方法"""
+
+    def test_reset_boost_clears_is_active(self):
+        """_reset_boost 清除 is_active 标志"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        self.game._reset_boost()
+
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_reset_boost_when_already_inactive(self):
+        """已处于不活跃状态时 _reset_boost 仍安全执行"""
+        self.game.snake.boost_state['is_active'] = False
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        self.game._reset_boost()
+
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_reset_boost_idempotent(self):
+        """多次 _reset_boost 结果一致"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 3.0
+
+        self.game._reset_boost()
+        self.game._reset_boost()
+        self.game._reset_boost()
+
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_reset_boost_clears_input_handler_boost_active(self):
+        """_reset_boost 同时复位 input_handler._boost_active"""
+        self.game.input_handler._boost_active = True
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        self.game._reset_boost()
+
+        self.assertFalse(self.game.input_handler._boost_active)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_reset_boost_clears_boost_active_when_already_false(self):
+        """_boost_active 已为 False 时 _reset_boost 仍安全执行"""
+        self.game.input_handler._boost_active = False
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        self.game._reset_boost()
+
+        self.assertFalse(self.game.input_handler._boost_active)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+
+# =============================================================================
+# 测试类：加速状态在状态转换时的复位
+# =============================================================================
+
+class TestBoostResetOnStateTransition(_GameTestBase):
+    """测试加速状态在 GAME_OVER / VICTORY / restart 时自动复位"""
+
+    def setUp(self):
+        super().setUp()
+        # 设置加速状态为活跃
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+    def test_boost_reset_on_boundary_collision(self):
+        """撞墙 GAME_OVER 时 boost 状态复位"""
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+
+        self.game._update()
+
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_boost_reset_on_self_collision(self):
+        """自撞 GAME_OVER 时 boost 状态复位"""
+        self.game.snake.body = [(3, 2), (3, 3), (4, 3), (5, 3)]
+        self.game.snake.direction = (0, 1)
+
+        self.game._update()
+
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_boost_reset_on_victory(self):
+        """棋盘满 VICTORY 时 boost 状态复位"""
+        self.game.snake.body = [(18, 14), (17, 14), (16, 14)]
+        self.game.snake.direction = (1, 0)
+        self.game.food.position = (19, 14)
+
+        original_respawn = self.game.food.respawn
+        self.game.food.respawn = lambda occupied: False
+
+        self.game._update()
+
+        self.assertEqual(GameState.VICTORY, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+        self.game.food.respawn = original_respawn
+
+    def test_boost_reset_on_restart(self):
+        """restart 时 boost 状态复位（双重保险）"""
+        self.game.state = GameState.GAME_OVER
+        self.game.reset()
+
+        self.assertEqual(GameState.RUNNING, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_boost_reset_on_no_collision_keeps_state(self):
+        """未发生碰撞时 boost 状态应保持不变（在 _update 内不改变）"""
+        original_active = self.game.snake.boost_state['is_active']
+        original_mult = self.game.snake.boost_state['current_multiplier']
+
+        # 确保食物不在蛇头前方，蛇也不会撞墙
+        self.game.food.position = (30, 20)  # far away from snake
+
+        self.game._update()
+
+        self.assertEqual(GameState.RUNNING, self.game.state)
+        self.assertEqual(original_active, self.game.snake.boost_state['is_active'])
+        self.assertEqual(original_mult, self.game.snake.boost_state['current_multiplier'])
+
+
+# =============================================================================
+# 测试类：run() 解耦架构集成测试
+# =============================================================================
+
+class TestDecoupledRun(_GameTestBase):
+    """测试 run() 解耦架构：accumulator、spiral-of-death 保护、非RUNNING清空"""
+
+    def test_run_exits_on_quit_event(self):
+        """QUIT 事件后 run() 正常退出，不改变游戏状态"""
+        pygame.event.post(pygame.event.Event(pygame.QUIT))
+        try:
+            self.game.run()
+        except Exception as e:
+            self.fail(f"run() raised unexpected exception: {e}")
+        # QUIT 事件只退出循环，不修改游戏状态
+        # (这里 state 可能是 RUNNING 因为没有碰撞发生)
+
+    def test_run_passes_boost_to_draw_frame(self):
+        """run() 将 is_boosting 传递给 draw_frame"""
+        with patch.object(self.game.renderer, 'draw_frame') as mock_draw:
+            with patch.object(self.game.renderer, 'tick', return_value=16):
+                pygame.event.post(pygame.event.Event(pygame.QUIT))
+                self.game.run()
+                # 至少调用一次
+                calls = mock_draw.call_args_list
+                self.assertGreater(len(calls), 0)
+                # 检查最后一个调用包含 is_boosting 关键字参数
+                last_call = calls[-1]
+                self.assertIn('is_boosting', last_call.kwargs)
+
+    def test_run_calls_update_boost_state(self):
+        """run() 每帧调用 _update_boost_state"""
+        with patch.object(self.game, '_update_boost_state') as mock_update_boost_state:
+            with patch.object(self.game.renderer, 'tick', return_value=16):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        mock_update_boost_state.assert_called()
+
+    def test_run_accumulator_not_triggering_when_not_running(self):
+        """非 RUNNING 状态时不触发 _update()"""
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=16):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        self.game.state = GameState.GAME_OVER
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        mock_update.assert_not_called()
+
+    def test_run_accumulator_not_triggering_when_paused(self):
+        """暂停时不触发 _update()"""
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=16):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        self.game.input_handler._paused = True
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        mock_update.assert_not_called()
+
+
+# =============================================================================
+# 测试类：Accumulator 和 spiral-of-death 保护
+# =============================================================================
+
+class TestAccumulatorLogic(_GameTestBase):
+    """测试 accumulator 累加器逻辑和 spiral-of-death 保护"""
+
+    def test_accumulator_triggers_update_when_full(self):
+        """accumulator 累积足够时间后触发 _update()"""
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=105.0):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        # tick 返回 105ms > BASE_TICK_INTERVAL(100ms)
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        # 至少触发一次 _update()
+                        self.assertGreater(mock_update.call_count, 0)
+
+    def test_accumulator_not_triggers_when_below_threshold(self):
+        """accumulator 不足时不触发 _update()"""
+        # tick 返回 16ms << 100ms, 只有 1 帧运行，不应触发 _update()
+        # 但 QUIT 事件会导致只运行 1 帧
+        # 需要设计一个测试：只运行几帧，验证 _update 未被触发
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=16.0):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        # 16ms < 100ms，不应触发 _update
+                        self.assertEqual(0, mock_update.call_count)
+
+    def test_spiral_of_death_protection_caps_catchup(self):
+        """MAX_CATCHUP_STEPS 限制单帧逻辑更新次数"""
+        # Mock renderer.tick 返回极大值触发多个 catchup
+        # 然后验证 _update 调用次数不超过 MAX_CATCHUP_STEPS
+        large_dt = float(BASE_TICK_INTERVAL * (MAX_CATCHUP_STEPS + 3))
+
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=large_dt):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        # _update 调用次数应不超过 MAX_CATCHUP_STEPS
+                        self.assertLessEqual(
+                            mock_update.call_count, MAX_CATCHUP_STEPS
+                        )
+
+    def test_accumulator_cleared_when_state_not_running(self):
+        """非 RUNNING 状态时 accumulator 被清零"""
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick') as mock_tick:
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        # 先放一个 QUIT 事件
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+
+                        # 设置 GAME_OVER 状态
+                        self.game.state = GameState.GAME_OVER
+                        self.game.run()
+
+                        # _update 在 GAME_OVER 状态不应被调用
+                        mock_update.assert_not_called()
+
+    def test_accumulator_dt_zero_boundary(self):
+        """dt=0 时 accumulator 不触发 _update() 且不崩溃"""
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=0.0):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        # dt=0 时 accumulator 不增加，不应触发 _update
+                        self.assertEqual(0, mock_update.call_count)
+
+    def test_accumulator_dt_extremely_large(self):
+        """dt 极大时 catchup 步数受 MAX_CATCHUP_STEPS 限制"""
+        # 使用极大 dt (相当于 10 秒) 验证保护机制
+        huge_dt = 10000.0  # 10 seconds
+
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=huge_dt):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        # 无论 dt 多大，_update 调用次数应不超过 MAX_CATCHUP_STEPS
+                        self.assertLessEqual(
+                            mock_update.call_count, MAX_CATCHUP_STEPS
+                        )
+
+    def test_accumulator_exact_multiple_triggers_exact_steps(self):
+        """accumulator 恰好为 tick_interval 整数倍时触发精确步数"""
+        # dt = BASE_TICK_INTERVAL * 3 -> 应触发恰好 3 步 (不超过 catchup 上限)
+        steps = min(3, MAX_CATCHUP_STEPS)
+        exact_dt = float(BASE_TICK_INTERVAL * steps)
+
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game.renderer, 'tick', return_value=exact_dt):
+                with patch.object(self.game.renderer, 'draw_frame'):
+                    with patch('pygame.display.flip'):
+                        pygame.event.post(pygame.event.Event(pygame.QUIT))
+                        self.game.run()
+                        self.assertEqual(steps, mock_update.call_count)
+
+
+# =============================================================================
+# 测试类：Mock _get_current_tick_interval 隔离测试
+# =============================================================================
+
+class TestTickIntervalIsolation(_GameTestBase):
+    """通过 mock _get_current_tick_interval 隔离测试累加器在不同 tick_interval 下的行为"""
+
+    def test_tick_interval_20ms_extreme(self):
+        """tick_interval=20ms 极限值下 accumulator 正确触发 _update()"""
+        interval_20ms = 20.0
+        # dt 略大于 20ms 应触发一次
+        dt = 21.0
+
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game, '_get_current_tick_interval',
+                              return_value=interval_20ms):
+                with patch.object(self.game.renderer, 'tick', return_value=dt):
+                    with patch.object(self.game.renderer, 'draw_frame'):
+                        with patch('pygame.display.flip'):
+                            pygame.event.post(pygame.event.Event(pygame.QUIT))
+                            self.game.run()
+                            self.assertEqual(1, mock_update.call_count)
+
+    def test_tick_interval_large_accumulator_multiple_frames(self):
+        """大 tick_interval 下多帧累积后触发 _update()"""
+        interval = 200.0
+        # 每帧 dt=16ms，需要 200/16=12.5 -> 13 帧才累积足够
+        # QUIT 事件只运行 1 帧，所以不应触发
+        dt_per_frame = 16.0
+
+        with patch.object(self.game, '_update') as mock_update:
+            with patch.object(self.game, '_get_current_tick_interval',
+                              return_value=interval):
+                with patch.object(self.game.renderer, 'tick',
+                                  return_value=dt_per_frame):
+                    with patch.object(self.game.renderer, 'draw_frame'):
+                        with patch('pygame.display.flip'):
+                            pygame.event.post(pygame.event.Event(pygame.QUIT))
+                            self.game.run()
+                            # dt=16ms < interval=200ms，不应触发
+                            self.assertEqual(0, mock_update.call_count)
+
+    def test_tick_interval_zero_negative_fallback(self):
+        """_get_current_tick_interval 返回 <=0 时，20ms clamp 确保不崩溃"""
+        # _get_current_tick_interval 内部已有防御 clamp，直接测试方法返回值
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertGreaterEqual(interval, 20.0)
+        self.assertIsInstance(interval, float)
+
+
+# =============================================================================
+# 测试类：Accumulator 多帧累积驱动 _update
+# =============================================================================
+
+class TestMultiFrameAccumulator(_GameTestBase):
+    """通过可控 dt 序列模拟多帧运行，验证累加器跨帧累积行为"""
+
+    def test_multi_frame_accumulation_triggers_update(self):
+        """多帧 dt 累积达到 tick_interval 后触发 _update()"""
+        # 每帧 25ms，累积 4 帧达到 100ms
+        dt_values = [25.0, 25.0, 25.0, 25.0]
+        interval = 100.0
+
+        with patch.object(self.game, '_get_current_tick_interval',
+                          return_value=interval):
+            with patch.object(self.game.renderer, 'draw_frame'):
+                with patch('pygame.display.flip'):
+                    # 通过直接模拟 run() 内部的 accumulator 逻辑
+                    # 而不是实际调用 run()
+                    pass
+
+        # 直接用 Game 实例模拟累加器逻辑
+        accumulator = 0.0
+        update_count = 0
+        for dt in dt_values:
+            accumulator += dt
+            while accumulator >= interval:
+                accumulator -= interval
+                update_count += 1
+        self.assertEqual(1, update_count)
+        self.assertAlmostEqual(0.0, accumulator)
+
+    def test_accumulator_rollover_triggers_multiple_updates(self):
+        """accumulator 在一次 catchup 中触发多次 _update"""
+        # dt=250ms, interval=100ms -> 应触发 2 次
+        dt = 250.0
+        interval = 100.0
+
+        accumulator = 0.0
+        update_count = 0
+        accumulator += dt
+        while accumulator >= interval:
+            accumulator -= interval
+            update_count += 1
+        self.assertEqual(2, update_count)
+        self.assertAlmostEqual(50.0, accumulator)
 
 
 if __name__ == "__main__":

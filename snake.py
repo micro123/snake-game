@@ -43,6 +43,10 @@ class Snake:
 
         self.body: List[Tuple[int, int]] = []
         self.direction: Tuple[int, int] = (1, 0)  # 默认向右
+        self.boost_state = {
+            'is_active': False,
+            'current_multiplier': 1.0,
+        }
         self._init_body()
 
     def _init_body(self) -> None:
@@ -68,6 +72,16 @@ class Snake:
     def length(self) -> int:
         """获取蛇身长度（节数）。"""
         return len(self.body)
+
+    @property
+    def is_boosting(self) -> bool:
+        """获取加速状态：是否当前处于加速中。"""
+        return self.boost_state['is_active']
+
+    @property
+    def boost_multiplier(self) -> float:
+        """获取当前加速倍率，保证返回值 >= 1.0。"""
+        return max(1.0, self.boost_state['current_multiplier'])
 
     # ------------------------------------------------------------------
     # 核心逻辑
@@ -143,5 +157,7 @@ class Snake:
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        """重置蛇到初始状态：恢复初始身体坐标和移动方向。"""
+        """重置蛇到初始状态：恢复初始身体坐标、移动方向和加速状态。"""
         self._init_body()
+        self.boost_state['is_active'] = False
+        self.boost_state['current_multiplier'] = 1.0

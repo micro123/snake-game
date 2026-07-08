@@ -3,13 +3,15 @@
 
 遍历 Pygame 事件队列，产出统一命令字典。实现 per-frame 单方向缓冲策略
 （同帧多方向键取最后有效者）、方向键到方向向量映射及反向拦截、
-QUIT 事件处理、R/Q 键仅在 GAME_OVER/VICTORY 时生效、焦点丢失/恢复检测控制暂停标志。
+QUIT 事件处理、R/Q 键仅在 GAME_OVER/VICTORY 时生效、焦点丢失/恢复检测控制暂停标志、
+加速键轮询检测（通过 pygame.key.get_pressed 持续轮询物理按键状态）。
 """
 
 from typing import Dict, Optional, Tuple
 
 import pygame
 
+from config import BOOST_KEY
 from game import GameState
 
 
@@ -25,9 +27,11 @@ class InputHandler:
     反向拦截：新方向与当前方向相反时忽略。
     Per-frame 单方向缓冲：同一帧内多个方向键，取最后有效者（已通过反向拦截的）。
     焦点丢失自动暂停，焦点恢复自动继续。
+    加速键通过 pygame.key.get_pressed() 轮询检测物理按键状态，暂停时返回 False。
 
     Attributes:
         _paused: 窗口是否处于失焦暂停状态
+        _boost_active: 加速标志位（WINDOWFOCUSLOST 时被强行清除）
     """
 
     # 方向键 -> 方向向量映射
@@ -39,12 +43,26 @@ class InputHandler:
     }
 
     def __init__(self) -> None:
-        """初始化输入处理器，暂停标志初始为 False。"""
+        """初始化输入处理器，暂停标志和加速标志初始为 False。"""
         self._paused: bool = False
+        self._boost_active: bool = False
 
     # ------------------------------------------------------------------
     # 公开接口
     # ------------------------------------------------------------------
+
+    def is_boost_pressed(self) -> bool:
+        """检测加速键是否被按住。
+
+        通过 pygame.key.get_pressed()[BOOST_KEY] 持续轮询物理按键状态。
+        当游戏处于暂停状态（窗口失焦）时始终返回 False，即使物理按键被按住。
+
+        Returns:
+            True 表示加速键当前被按住且游戏未暂停
+        """
+        if self._paused:
+            return False
+        return bool(pygame.key.get_pressed()[BOOST_KEY])
 
     def process_events(
         self,
@@ -60,13 +78,15 @@ class InputHandler:
         4. R 键 —— 仅在 GAME_OVER 或 VICTORY 状态时返回 restart
         5. Q 键 —— 仅在 GAME_OVER 或 VICTORY 状态时返回 quit
         6. 窗口焦点事件 —— 失焦暂停、聚焦继续，此时丢弃方向输入
+           失焦时同时强行清除 _boost_active 标志
+        7. 加速键轮询 —— 通过 is_boost_pressed() 获取当前加速状态
 
         Args:
             current_direction: 蛇的当前移动方向向量 (dx, dy)
             state: 当前游戏状态（RUNNING / GAME_OVER / VICTORY）
 
         Returns:
-            命令字典，格式为 {'action': str, 'direction'?: (dx, dy)}
+            命令字典，格式为 {'action': str, 'boost': bool, 'direction'?: (dx, dy)}
             action 可能的值为: 'direction', 'restart', 'quit', 'pause', 'resume', 'none'
         """
         last_action: str = 'none'
@@ -75,12 +95,13 @@ class InputHandler:
         for event in pygame.event.get():
             # 窗口关闭事件 — 最高优先级，立即返回
             if event.type == pygame.QUIT:
-                return {'action': 'quit'}
+                return {'action': 'quit', 'boost': self.is_boost_pressed()}
 
             # 窗口焦点事件 — 控制暂停/恢复
             # 注意：Pygame 中将焦点变化作为独立事件类型，而非 WINDOWEVENT 子类型
             elif event.type == pygame.WINDOWFOCUSLOST:
                 self._paused = True
+                self._boost_active = False
                 last_action = 'pause'
                 last_direction = None
             elif event.type == pygame.WINDOWFOCUSGAINED:
@@ -109,11 +130,15 @@ class InputHandler:
                         last_action = 'quit'
                         last_direction = None
 
-        # 构造返回命令
+        # 构造返回命令（统一追加 boost 字段）
         if last_action == 'direction' and last_direction is not None:
-            return {'action': 'direction', 'direction': last_direction}
+            return {
+                'action': 'direction',
+                'direction': last_direction,
+                'boost': self.is_boost_pressed(),
+            }
 
-        return {'action': last_action}
+        return {'action': last_action, 'boost': self.is_boost_pressed()}
 
     def is_paused(self) -> bool:
         """返回当前暂停状态。

@@ -14,8 +14,8 @@ import pygame._freetype
 from config import (
     CELL_SIZE,
     COLORS,
-    FPS,
     HUD_HEIGHT,
+    RENDER_FPS,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
@@ -103,15 +103,23 @@ class Renderer:
                 self.screen, COLORS.GRID_LINE, (0, row), (WINDOW_WIDTH, row)
             )
 
-    def draw_snake(self, snake: Snake) -> None:
+    def draw_snake(self, snake: Snake, is_boosting: bool = False) -> None:
         """绘制蛇：先绘制蛇身（尾到头），再绘制蛇头以区分颜色。
 
         蛇身使用 SNAKE_BODY 色，蛇头使用 SNAKE_HEAD 色。
         从 body[1:] 遍历蛇身各节，最后绘制 body[0] 蛇头。
 
+        当 is_boosting=True 时，蛇身使用 BOOST_SNAKE_BODY 色，蛇头使用 BOOST_SNAKE_HEAD 色，
+        提供加速状态的视觉反馈。
+
         Args:
             snake: Snake 实例，提供 body 坐标列表
+            is_boosting: 是否处于加速状态，默认 False
         """
+        # 加速状态下使用不同颜色
+        body_color = COLORS.BOOST_SNAKE_BODY if is_boosting else COLORS.SNAKE_BODY
+        head_color = COLORS.BOOST_SNAKE_HEAD if is_boosting else COLORS.SNAKE_HEAD
+
         # 蛇身（除蛇头外）
         for segment in snake.body[1:]:
             rect = pygame.Rect(
@@ -120,7 +128,7 @@ class Renderer:
                 CELL_SIZE,
                 CELL_SIZE,
             )
-            pygame.draw.rect(self.screen, COLORS.SNAKE_BODY, rect)
+            pygame.draw.rect(self.screen, body_color, rect)
 
         # 蛇头 (body[0])
         if snake.body:
@@ -131,7 +139,7 @@ class Renderer:
                 CELL_SIZE,
                 CELL_SIZE,
             )
-            pygame.draw.rect(self.screen, COLORS.SNAKE_HEAD, head_rect)
+            pygame.draw.rect(self.screen, head_color, head_rect)
 
     def draw_food(self, food: Food) -> None:
         """绘制食物：检查占位值 (-1, -1) 后才绘制。
@@ -154,14 +162,16 @@ class Renderer:
         )
         pygame.draw.rect(self.screen, COLORS.FOOD, rect)
 
-    def draw_hud(self, score: int) -> None:
-        """绘制 HUD：在窗口顶部显示当前分数。
+    def draw_hud(self, score: int, is_boosting: bool = False) -> None:
+        """绘制 HUD：在窗口顶部显示当前分数，加速状态下在右侧显示 'BOOST' 文字。
 
         先绘制深色半透明背景条（HUD_HEIGHT 高度通栏），
         再在其上左侧渲染 "Score: {score}" 文字。
+        当 is_boosting=True 时，在 HUD 右侧渲染 "BOOST" 文字（BOOST_HUD_TEXT 色）。
 
         Args:
             score: 当前分数值
+            is_boosting: 是否处于加速状态，默认 False
         """
         # HUD 背景条 (深色，半透明)
         hud_bg = pygame.Surface((WINDOW_WIDTH, HUD_HEIGHT), pygame.SRCALPHA)
@@ -175,6 +185,15 @@ class Renderer:
         text_rect = score_text.get_rect()
         text_rect.midleft = (12, HUD_HEIGHT // 2)
         self.screen.blit(score_text, text_rect)
+
+        # 加速状态指示文字 (右侧对齐，垂直居中)
+        if is_boosting:
+            boost_text = self._render_text(
+                self.font_small, "BOOST", COLORS.BOOST_HUD_TEXT
+            )
+            boost_rect = boost_text.get_rect()
+            boost_rect.midright = (WINDOW_WIDTH - 12, HUD_HEIGHT // 2)
+            self.screen.blit(boost_text, boost_rect)
 
     def draw_game_over(self, score: int) -> None:
         """绘制游戏结束遮罩：半透明背景 + GAME OVER 文字 + 最终得分 + 操作提示。
@@ -271,6 +290,7 @@ class Renderer:
         food: Food,
         score: int,
         state: GameState,
+        is_boosting: bool = False,
     ) -> None:
         """按图层顺序合成并绘制完整帧。
 
@@ -278,7 +298,7 @@ class Renderer:
         1. draw_background   — 背景色 + 网格线
         2. draw_snake        — 蛇身（尾到头） + 蛇头
         3. draw_food         — 食物（跳过占位）
-        4. draw_hud          — 顶部分数显示
+        4. draw_hud          — 顶部分数显示 + 条件 BOOST 文字
         5. 条件遮罩          — 根据 GameState 叠加 game_over / victory
 
         Args:
@@ -286,11 +306,12 @@ class Renderer:
             food: Food 实例
             score: 当前分数
             state: 游戏状态枚举 (RUNNING / GAME_OVER / VICTORY)
+            is_boosting: 是否处于加速状态，默认 False
         """
         self.draw_background()
-        self.draw_snake(snake)
+        self.draw_snake(snake, is_boosting)
         self.draw_food(food)
-        self.draw_hud(score)
+        self.draw_hud(score, is_boosting)
 
         if state == GameState.GAME_OVER:
             self.draw_game_over(score)
@@ -303,9 +324,12 @@ class Renderer:
     # ------------------------------------------------------------------
 
     def tick(self) -> int:
-        """控制帧率：调用 clock.tick(FPS) 限制每秒帧数。
+        """控制帧率：调用 clock.tick(RENDER_FPS) 限制每秒帧数。
+
+        渲染帧率固定为 RENDER_FPS (默认 60 fps)，
+        与逻辑 tick 间隔 (BASE_TICK_INTERVAL) 解耦。
 
         Returns:
             自上次 tick 以来经过的时间（毫秒）
         """
-        return self.clock.tick(FPS)
+        return self.clock.tick(RENDER_FPS)

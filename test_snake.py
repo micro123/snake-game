@@ -257,6 +257,54 @@ class TestCheckSelfCollision(unittest.TestCase):
         self.assertTrue(self.snake.check_self_collision())
 
 
+class TestBoostState(unittest.TestCase):
+    """测试 boost_state 属性、is_boosting / boost_multiplier 只读 property"""
+
+    def setUp(self):
+        self.snake = Snake(40, 30)
+
+    def test_boost_state_initial_values(self):
+        """初始化后 boost_state 为默认值"""
+        self.assertFalse(self.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.snake.boost_state['current_multiplier'])
+
+    def test_is_boosting_defaults_false(self):
+        self.assertFalse(self.snake.is_boosting)
+
+    def test_boost_multiplier_defaults_to_one(self):
+        self.assertEqual(1.0, self.snake.boost_multiplier)
+
+    def test_is_boosting_reflects_boost_state(self):
+        """is_boosting property 正确反映 boost_state['is_active']"""
+        self.snake.boost_state['is_active'] = True
+        self.assertTrue(self.snake.is_boosting)
+        self.snake.boost_state['is_active'] = False
+        self.assertFalse(self.snake.is_boosting)
+
+    def test_boost_multiplier_reflects_current_multiplier(self):
+        """boost_multiplier property 正确反映 current_multiplier"""
+        self.snake.boost_state['current_multiplier'] = 2.5
+        self.assertEqual(2.5, self.snake.boost_multiplier)
+
+    def test_boost_multiplier_never_below_one(self):
+        """boost_multiplier 保证 >= 1.0，即使内部值被设为小于 1.0"""
+        self.snake.boost_state['current_multiplier'] = 0.5
+        self.assertEqual(1.0, self.snake.boost_multiplier)
+
+        self.snake.boost_state['current_multiplier'] = -1.0
+        self.assertEqual(1.0, self.snake.boost_multiplier)
+
+    def test_boost_multiplier_at_boundary_one(self):
+        """boost_multiplier 在 current_multiplier=1.0 时返回 1.0"""
+        self.snake.boost_state['current_multiplier'] = 1.0
+        self.assertEqual(1.0, self.snake.boost_multiplier)
+
+    def test_boost_multiplier_large_value(self):
+        """boost_multiplier 处理大倍数"""
+        self.snake.boost_state['current_multiplier'] = 5.0
+        self.assertEqual(5.0, self.snake.boost_multiplier)
+
+
 class TestReset(unittest.TestCase):
     """测试 reset 重置功能"""
 
@@ -283,6 +331,24 @@ class TestReset(unittest.TestCase):
         self.snake.move_and_grow(True)
         self.snake.reset()
         self.assertEqual(3, self.snake.length)
+
+    def test_reset_restores_boost_state(self):
+        """reset() 后 boost_state 复位为初始值"""
+        self.snake.boost_state['is_active'] = True
+        self.snake.boost_state['current_multiplier'] = 2.0
+        self.snake.reset()
+        self.assertFalse(self.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.snake.boost_state['current_multiplier'])
+        self.assertFalse(self.snake.is_boosting)
+        self.assertEqual(1.0, self.snake.boost_multiplier)
+
+    def test_reset_boost_state_when_inactive(self):
+        """reset() 在不活跃加速状态下仍正确复位 boost_state"""
+        self.snake.boost_state['is_active'] = False
+        self.snake.boost_state['current_multiplier'] = 1.0
+        self.snake.reset()
+        self.assertFalse(self.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.snake.boost_state['current_multiplier'])
 
     def test_multiple_resets_idempotent(self):
         """多次 reset 结果一致（reset 在已修改状态下也正确恢复到初始）"""

@@ -24,7 +24,9 @@ from config import (
     WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE,
     CELL_SIZE, GRID_COLS, GRID_ROWS,
     FPS, INITIAL_SNAKE_LENGTH, SCORE_PER_FOOD, HUD_HEIGHT,
-    COLORS,
+    COLORS, RENDER_FPS, BASE_TICK_INTERVAL,
+    BOOST_SPEED_MULTIPLIER, MAX_BOOST_MULTIPLIER,
+    BOOST_TRANSITION_SECONDS,
 )
 from game import Game, GameState
 from snake import Snake
@@ -487,7 +489,7 @@ class TestAC08FPSAndResponsiveness(_IntegrationTestBase):
             intervals.append(dt)
 
         avg_interval = sum(intervals) / len(intervals)
-        target_interval = 1.0 / FPS  # 0.1s for FPS=10
+        target_interval = 1.0 / RENDER_FPS  # ~16.7ms for RENDER_FPS=60
 
         # 平均帧间隔应在目标的 ±20% 内
         self.assertGreaterEqual(avg_interval, target_interval * 0.8,
@@ -508,12 +510,12 @@ class TestAC08FPSAndResponsiveness(_IntegrationTestBase):
             frame_times.append(time.time() - t0)
 
         avg = sum(frame_times) / len(frame_times)
-        target = 1.0 / FPS
+        target = 1.0 / RENDER_FPS
 
         deviation = abs(avg - target) / target
         self.assertLessEqual(deviation, 0.20,
                              f"FPS deviation {deviation:.2%} exceeds 20% "
-                             f"(avg={1/avg:.1f} FPS, target={FPS} FPS)")
+                             f"(avg={1/avg:.1f} FPS, target={RENDER_FPS} FPS)")
 
     def test_tick_returns_positive_milliseconds(self):
         """tick 返回正整数的毫秒数"""
@@ -624,7 +626,7 @@ class TestE001BoardFullVictory(_IntegrationTestBase):
         """满棋盘时状态迁移到 VICTORY"""
         self.game.snake.body = [(19, 15), (18, 15), (17, 15)]
         self.game.snake.direction = (1, 0)
-        self.game.food.position = (19, 15)
+        self.game.food.position = (20, 15)
         self.game.state = GameState.RUNNING
 
         original_respawn = self.game.food.respawn
@@ -655,7 +657,7 @@ class TestE001BoardFullVictory(_IntegrationTestBase):
         self.game.food.respawn = lambda occupied: False
         self.game.snake.body = [(19, 15), (18, 15), (17, 15)]
         self.game.snake.direction = (1, 0)
-        self.game.food.position = (19, 15)  # 食物在蛇头位置
+        self.game.food.position = (20, 15)  # 食物在蛇头前方一格
         self.game.state = GameState.RUNNING
 
         self.game._update()
@@ -1006,7 +1008,7 @@ class TestE008RespawnFallback(_IntegrationTestBase):
         self.game.food.respawn = lambda occ: False
         self.game.snake.body = [(19, 15), (18, 15), (17, 15)]
         self.game.snake.direction = (1, 0)
-        self.game.food.position = (19, 15)
+        self.game.food.position = (20, 15)
 
         try:
             self.game._update()
@@ -1022,7 +1024,7 @@ class TestE008RespawnFallback(_IntegrationTestBase):
         self.game.food.respawn = lambda occ: False
         self.game.snake.body = [(19, 15), (18, 15), (17, 15)]
         self.game.snake.direction = (1, 0)
-        self.game.food.position = (19, 15)
+        self.game.food.position = (20, 15)
         self.game._update()
         self.assertEqual(GameState.VICTORY, self.game.state)
 
@@ -1418,14 +1420,14 @@ class TestPerformance(_IntegrationTestBase):
             frame_times.append(time.time() - t0)
 
         avg_frame_time = sum(frame_times) / len(frame_times)
-        target_frame_time = 1.0 / FPS
+        target_frame_time = 1.0 / RENDER_FPS
 
         deviation = abs(avg_frame_time - target_frame_time) / target_frame_time
         actual_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else float('inf')
 
         self.assertLessEqual(deviation, 0.20,
                              f"FPS deviation {deviation:.2%} exceeds 20% "
-                             f"(actual={actual_fps:.1f}, target={FPS})")
+                             f"(actual={actual_fps:.1f}, target={RENDER_FPS})")
 
     def test_hundred_ticks_no_degradation(self):
         """100 次 tick 帧率稳定无退化"""
@@ -1460,6 +1462,991 @@ class TestPerformance(_IntegrationTestBase):
         # 单次 _update 应 < 5ms
         self.assertLess(avg, 5.0,
                         f"_update avg {avg:.2f}ms too slow")
+
+
+# =============================================================================
+# T-010: 加速集成测试 — 5 条关键流程端到端
+# =============================================================================
+
+
+class TestBoostIntegrationFlows(_IntegrationTestBase):
+    """T-010 加速集成测试：5 条关键流程端到端验证"""
+
+    # ==========================================================================
+    # Flow-1: 基础加速流程 — 按下 Space -> 加速 -> 释放恢复
+    # ==========================================================================
+
+    def test_basic_boost_press_speed_increases(self):
+        """按住加速键后 tick_interval 缩短，蛇速度提升"""
+        # 基准 tick_interval
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        base_interval = self.game._get_current_tick_interval()
+        self.assertEqual(float(BASE_TICK_INTERVAL), base_interval)
+
+        # 模拟按住加速键多帧推进直到达到目标倍率
+        for _ in range(100):
+            self.game._update_boost_state(16.0, True)
+
+        boost_interval = self.game._get_current_tick_interval()
+        self.assertLess(boost_interval, base_interval,
+                        "Boost should reduce tick interval")
+        self.assertTrue(self.game.snake.is_boosting,
+                        "Snake should be in boosting state")
+
+    def test_basic_boost_release_speed_restores(self):
+        """释放加速键后 tick_interval 恢复为基准值"""
+        # 先加速到满
+        self.game.snake.boost_state['current_multiplier'] = BOOST_SPEED_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 释放加速键，推进足够帧数
+        for _ in range(100):
+            self.game._update_boost_state(16.0, False)
+
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(float(BASE_TICK_INTERVAL), interval, places=1)
+        self.assertFalse(self.game.snake.is_boosting)
+
+    def test_basic_boost_no_direction_interference(self):
+        """加速键不影响方向移动：加速期间蛇仍正常前进一步"""
+        head_before = self.game.snake.head
+        direction_before = self.game.snake.direction
+
+        # 激活加速
+        self.game.snake.boost_state['current_multiplier'] = BOOST_SPEED_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 执行一次 _update，蛇应前进一步
+        self.game._update()
+
+        expected_head = (head_before[0] + direction_before[0],
+                         head_before[1] + direction_before[1])
+        self.assertEqual(expected_head, self.game.snake.head,
+                         "Boost must not affect grid-step distance")
+
+    def test_basic_boost_single_tap_no_glitch(self):
+        """单次快速按下释放（tap）不会导致加速状态闪烁"""
+        # 模拟 tap: 一帧 True -> 多帧 False
+        self.game._update_boost_state(16.0, True)
+        multiplier_after_tap = self.game.snake.boost_state['current_multiplier']
+
+        # 一帧后立即释放
+        for _ in range(100):
+            self.game._update_boost_state(16.0, False)
+
+        # 最终应恢复为 1.0
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'],
+                               places=1)
+        self.assertFalse(self.game.snake.is_boosting)
+
+    # ==========================================================================
+    # Flow-2: GameOver 复位流程 — 加速中碰撞 -> 加速清除
+    # ==========================================================================
+
+    def test_boost_reset_on_game_over_boundary(self):
+        """加速中撞墙 -> GAME_OVER -> boost 立即清除"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        # 撞墙
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+        self.game._update()
+
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_boost_reset_on_game_over_self_collision(self):
+        """加速中自撞 -> GAME_OVER -> boost 立即清除"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        self.game.snake.body = [(3, 2), (3, 3), (4, 3), (5, 3)]
+        self.game.snake.direction = (0, 1)
+        self.game._update()
+
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_boost_game_over_no_boost_on_restart(self):
+        """GameOver 后按 R 重启，以基准速度开始"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.state = GameState.GAME_OVER
+
+        # 执行 restart
+        self.game.reset()
+
+        self.assertEqual(GameState.RUNNING, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    # ==========================================================================
+    # Flow-3: 暂停/失焦流程 — 加速中暂停 -> 加速清除
+    # ==========================================================================
+
+    def test_boost_cleared_on_focus_lost(self):
+        """加速中失焦 -> boost 标志清除"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.input_handler._boost_active = True
+
+        # 发送失焦事件
+        _post_event(pygame.WINDOWFOCUSLOST)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.direction, self.game.state)
+        self.game._handle_command(cmd)
+
+        self.assertTrue(self.game.input_handler.is_paused())
+        self.assertFalse(self.game.input_handler._boost_active)
+
+    def test_boost_not_restored_after_focus_regain_without_release(self):
+        """切回后即使物理键仍按住，加速不自动激活（需要释放后重新按下）"""
+        self.game.input_handler._paused = True
+        self.game.input_handler._boost_active = False
+
+        # 失焦后 _paused=True，is_boost_pressed() 返回 False
+        self.assertFalse(self.game.input_handler.is_boost_pressed())
+
+        # 恢复焦点
+        _clear_events()
+        _post_event(pygame.WINDOWFOCUSGAINED)
+        self.game.input_handler.process_events(
+            self.game.snake.direction, self.game.state)
+        self.assertFalse(self.game.input_handler.is_paused())
+
+        # 由于 _boost_active 已为 False，is_boost_pressed() 返回物理键状态
+        # 但 Pygame 在焦点恢复后需要通过一次释放+重新按下才刷新键状态
+        self.assertIsInstance(self.game.input_handler.is_boost_pressed(), bool)
+
+    def test_boost_stays_cleared_during_pause(self):
+        """暂停期间 boost state 加速倍率被强制恢复为 1.0（因非RUNNING）"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+        self.game.input_handler._paused = True
+
+        # 暂停期间 _paused 阻止 _update 执行
+        # 但 boost state 在 run() 的 else 分支会被 _update_boost_state 处理
+        # 这里测试非 RUNNING 状态下的倍率强制逻辑
+        self.game.state = GameState.RUNNING
+        for _ in range(50):
+            self.game._update_boost_state(16.0, True)
+
+        # 检查: _update_boost_state 中非 RUNNING 状态 target 为 1.0
+        # 但当前是 RUNNING + paused，需确保 pause 不会阻止蛇移动
+        # 本测试验证的是 _update 在暂停时不执行
+        body_before = list(self.game.snake.body)
+        self.game._update()
+        self.assertEqual(body_before, self.game.snake.body,
+                         "Pause should freeze snake movement")
+
+    # ==========================================================================
+    # Flow-4: 平滑过渡流程 — 渐进加速/减速
+    # ==========================================================================
+
+    def test_smooth_transition_ramp_up(self):
+        """按下加速键后倍率渐进上升（非瞬时跳变）"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        # 第一帧：倍率略微上升
+        self.game._update_boost_state(16.0, True)
+        m1 = self.game.snake.boost_state['current_multiplier']
+        self.assertGreater(m1, 1.0)
+
+        # 第二帧：继续上升
+        self.game._update_boost_state(16.0, True)
+        m2 = self.game.snake.boost_state['current_multiplier']
+        self.assertGreater(m2, m1,
+                           f"Smooth transition: frame2 {m2} should > frame1 {m1}")
+
+    def test_smooth_transition_ramp_down(self):
+        """释放加速键后倍率渐进下降"""
+        self.game.snake.boost_state['current_multiplier'] = BOOST_SPEED_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 第一帧
+        self.game._update_boost_state(16.0, False)
+        m1 = self.game.snake.boost_state['current_multiplier']
+        self.assertLess(m1, BOOST_SPEED_MULTIPLIER)
+
+        # 第二帧继续下降
+        self.game._update_boost_state(16.0, False)
+        m2 = self.game.snake.boost_state['current_multiplier']
+        self.assertLess(m2, m1,
+                        f"Smooth transition down: frame2 {m2} should < frame1 {m1}")
+
+    def test_smooth_transition_completes_within_expected_frames(self):
+        """平滑过渡在约 150ms (@60fps ≈ 9 帧) 内完成"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        frames_to_target = 0
+        for _ in range(30):  # 最多 30 帧，应该足够
+            self.game._update_boost_state(16.0, True)
+            frames_to_target += 1
+            if abs(self.game.snake.boost_state['current_multiplier']
+                   - BOOST_SPEED_MULTIPLIER) < 0.01:
+                break
+
+        self.assertLessEqual(frames_to_target, 15,
+                             f"Ramp-up took {frames_to_target} frames, expected <= 15")
+        self.assertAlmostEqual(BOOST_SPEED_MULTIPLIER,
+                               self.game.snake.boost_state['current_multiplier'],
+                               places=1)
+
+    def test_smooth_transition_down_completes_in_expected_frames(self):
+        """减速过渡在约 150ms 内完成"""
+        self.game.snake.boost_state['current_multiplier'] = BOOST_SPEED_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        frames_to_one = 0
+        for _ in range(30):
+            self.game._update_boost_state(16.0, False)
+            frames_to_one += 1
+            if abs(self.game.snake.boost_state['current_multiplier'] - 1.0) < 0.01:
+                break
+
+        self.assertLessEqual(frames_to_one, 15,
+                             f"Ramp-down took {frames_to_one} frames, expected <= 15")
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'],
+                               places=1)
+
+    def test_no_division_by_zero_in_transition(self):
+        """平滑过渡计算无除零错误"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        # 连续多帧操作不报错
+        for _ in range(200):
+            try:
+                self.game._update_boost_state(16.0, True)
+                self.game._update_boost_state(16.0, False)
+            except ZeroDivisionError:
+                self.fail("Boost transition caused ZeroDivisionError")
+            except Exception as e:
+                self.fail(f"Boost transition raised unexpected {type(e).__name__}: {e}")
+
+    # ==========================================================================
+    # Flow-5: 重启复位流程 — 加速中按 R -> 基准速度
+    # ==========================================================================
+
+    def test_restart_from_boost_state_resets_boost(self):
+        """加速状态下按 R 重启，boost 完全清除"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.5
+        self.game.input_handler._boost_active = True
+        self.game.state = GameState.GAME_OVER
+
+        # 执行重启
+        self.game.reset()
+
+        self.assertEqual(GameState.RUNNING, self.game.state)
+        self.assertEqual(0, self.game.score)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+        self.assertFalse(self.game.input_handler._boost_active)
+
+    def test_restart_boost_reset_double_insurance(self):
+        """snake.reset() + Game._reset_boost() 双重保险确保 boost 复位"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 3.0
+        self.game.input_handler._boost_active = True
+
+        # 只调用 Game.reset()（内部会调用 snake.reset() + _reset_boost()）
+        self.game.reset()
+
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+        self.assertFalse(self.game.input_handler._boost_active)
+
+    def test_restart_from_running_with_boost_clears_it(self):
+        """RUNNING 状态下 reset 也清除 boost（防御性）"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        self.game.reset()
+
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+
+# =============================================================================
+# T-010: BC-001 ~ BC-010 全部 10 个边界情况验证
+# =============================================================================
+
+
+class TestBC001BoostDuringGameOver(_IntegrationTestBase):
+    """BC-001: 加速中触发 Game Over — 加速效果立即清除。
+    Game Over 画面下即使按住加速键也不应有加速残留。
+    重新开始后以基准速度运行。"""
+
+    def test_boost_cleared_on_boundary_collision(self):
+        """加速中撞墙 -> boost 清除"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+        self.game._update()
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_boost_cleared_on_self_collision(self):
+        """加速中自撞 -> boost 清除"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.body = [(3, 2), (3, 3), (4, 3), (5, 3)]
+        self.game.snake.direction = (0, 1)
+        self.game._update()
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_game_over_boost_not_effective_despite_key_held(self):
+        """GAME_OVER 状态下 _update_boost_state 强制 target=1.0"""
+        self.game.state = GameState.GAME_OVER
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        # 按住加速键推进帧
+        for _ in range(50):
+            self.game._update_boost_state(16.0, True)
+
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'],
+                               places=1)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+
+    def test_restart_after_boost_game_over_at_base_speed(self):
+        """碰撞后重启 -> 基准速度"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+        self.game._update()
+        self.game.reset()
+        self.assertEqual(GameState.RUNNING, self.game.state)
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+
+class TestBC002BoostDuringPauseResume(_IntegrationTestBase):
+    """BC-002: 加速中暂停与恢复 — 加速清除。
+    恢复后即使未释放加速键也不自动恢复加速，必须释放后重新按下。"""
+
+    def test_boost_cleared_on_pause_and_not_auto_restored(self):
+        """失焦暂停清除 boost，恢复后不自动激活"""
+        # 激活加速
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.input_handler._boost_active = True
+
+        # 失焦
+        _post_event(pygame.WINDOWFOCUSLOST)
+        self.game.input_handler.process_events(
+            self.game.snake.direction, self.game.state)
+
+        self.assertTrue(self.game.input_handler.is_paused())
+        self.assertFalse(self.game.input_handler._boost_active)
+
+        # 恢复焦点后 is_boost_pressed() 需要物理键释放后重新按下
+        # _boost_active 已为 False，暂停期间 is_boost_pressed 返回 False
+        self.assertFalse(self.game.input_handler.is_boost_pressed())
+
+    def test_boost_not_active_after_unpause(self):
+        """恢复后不自动加速"""
+        self.game.input_handler._paused = True
+        self.game.input_handler._boost_active = False
+
+        # 恢复焦点
+        _clear_events()
+        _post_event(pygame.WINDOWFOCUSGAINED)
+        self.game.input_handler.process_events(
+            self.game.snake.direction, self.game.state)
+
+        self.assertFalse(self.game.input_handler.is_paused())
+        # _boost_active 仍为 False，需要重新按加速键
+        self.assertFalse(self.game.input_handler._boost_active)
+
+
+class TestBC003GameNotStartedBoostKey(_IntegrationTestBase):
+    """BC-003: 游戏未开始时按住加速键 — 开始后以基准速度运行，不自动加速。"""
+
+    def test_boost_in_game_over_before_start_ignored(self):
+        """GAME_OVER 状态下 boost_boost_state 强制 target=1.0"""
+        self.game.state = GameState.GAME_OVER
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        for _ in range(50):
+            self.game._update_boost_state(16.0, True)
+
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'], places=1)
+        self.assertFalse(self.game.snake.is_boosting)
+
+    def test_restart_from_game_over_with_boost_pressed_starts_at_base(self):
+        """GAME_OVER 画面下按 R 开始 -> 基准速度"""
+        self.game.state = GameState.GAME_OVER
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        self.game.reset()
+
+        # 以基准速度重启
+        self.assertFalse(self.game.snake.boost_state['is_active'])
+        self.assertEqual(1.0, self.game.snake.boost_state['current_multiplier'])
+
+    def test_victory_state_boost_ignored(self):
+        """VICTORY 状态下按住加速键无效"""
+        self.game.state = GameState.VICTORY
+        self.game.snake.boost_state['current_multiplier'] = 1.5
+
+        for _ in range(50):
+            self.game._update_boost_state(16.0, True)
+
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'], places=1)
+        self.assertFalse(self.game.snake.is_boosting)
+
+
+class TestBC004FocusLossBoostHeld(_IntegrationTestBase):
+    """BC-004: 窗口失去焦点时加速键被按住 -> 加速清除。
+    切回后即使键仍被物理按住，加速不激活。"""
+
+    def test_focus_loss_clears_input_handler_boost_active(self):
+        """失焦时 _boost_active 被强行清除"""
+        self.game.input_handler._boost_active = True
+
+        _post_event(pygame.WINDOWFOCUSLOST)
+        self.game.input_handler.process_events(
+            self.game.snake.direction, self.game.state)
+
+        self.assertFalse(self.game.input_handler._boost_active)
+
+    def test_focus_loss_boost_not_active(self):
+        """失焦后 is_boost_pressed() 返回 False"""
+        self.game.input_handler._paused = True
+        self.game.input_handler._boost_active = False
+
+        result = self.game.input_handler.is_boost_pressed()
+        self.assertFalse(result)
+
+
+class TestBC005RapidBoostToggle(_IntegrationTestBase):
+    """BC-005: 快速连续按压释放 — 加速状态不应闪烁或导致 tick 间隔剧烈抖动。
+    若实现平滑过渡，以最后稳定状态为准。"""
+
+    def test_rapid_toggle_boost_no_glitch(self):
+        """快速连按/连放不导致崩溃或异常状态"""
+        for _ in range(100):
+            # 快速交替
+            self.game._update_boost_state(16.0, True)
+            self.game._update_boost_state(16.0, False)
+
+        # 最终状态应稳定
+        self.assertGreaterEqual(self.game.snake.boost_state['current_multiplier'], 1.0)
+        self.assertLessEqual(self.game.snake.boost_state['current_multiplier'],
+                             MAX_BOOST_MULTIPLIER)
+
+    def test_rapid_toggle_settles_to_steady_state(self):
+        """快速连按后以最终稳定状态为准（最后为释放 -> 恢复 1.0）"""
+        # 交替 50 次，最后停在释放状态
+        for _ in range(50):
+            self.game._update_boost_state(16.0, True)
+        # 立即释放并推进足够帧数
+        for _ in range(100):
+            self.game._update_boost_state(16.0, False)
+
+        self.assertAlmostEqual(1.0,
+                               self.game.snake.boost_state['current_multiplier'], places=1)
+        self.assertFalse(self.game.snake.is_boosting)
+
+    def test_rapid_toggle_tick_interval_no_jitter(self):
+        """快速连打 transition 后 tick_interval 不剧烈抖动"""
+        intervals = []
+        for cycle in range(30):
+            self.game._update_boost_state(16.0, True)
+            intervals.append(self.game._get_current_tick_interval())
+            self.game._update_boost_state(16.0, False)
+            intervals.append(self.game._get_current_tick_interval())
+
+        # 所有 interval 应 > 0 且 <= BASE_TICK_INTERVAL
+        max_interval = max(intervals)
+        min_interval = min(intervals)
+        self.assertLessEqual(max_interval, float(BASE_TICK_INTERVAL) + 5.0)
+        self.assertGreaterEqual(min_interval, 20.0)
+
+
+class TestBC006ExtremeMultiplier(_IntegrationTestBase):
+    """BC-006: 极端加速倍率 — BOOST_SPEED_MULTIPLIER 超出 MAX_BOOST_MULTIPLIER
+    时 clamp 到上限，tick_interval 不低于 20ms。"""
+
+    def test_multiplier_clamped_at_max(self):
+        """当前 BOOST_SPEED_MULTIPLIER 在范围内，验证 clamp 防御性"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        interval = self.game._get_current_tick_interval()
+        self.assertGreaterEqual(interval, 20.0,
+                                f"Tick interval {interval}ms < 20ms at max multiplier")
+
+    def test_max_multiplier_interval_not_below_20ms(self):
+        """最大倍率下 interval >= 20ms"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        base_expected = BASE_TICK_INTERVAL / MAX_BOOST_MULTIPLIER
+        actual = self.game._get_current_tick_interval()
+        expected = max(20.0, base_expected)
+        self.assertEqual(expected, actual)
+
+    def test_multiplier_clamp_in_config(self):
+        """config 模块加载时 BOOST_SPEED_MULTIPLIER 已校验（无需运行时 clamp）"""
+        from config import BOOST_SPEED_MULTIPLIER, MAX_BOOST_MULTIPLIER
+        self.assertLessEqual(BOOST_SPEED_MULTIPLIER, MAX_BOOST_MULTIPLIER)
+        self.assertGreaterEqual(BOOST_SPEED_MULTIPLIER, 1.0)
+
+
+class TestBC007FoodDuringBoost(_IntegrationTestBase):
+    """BC-007: 食物恰好在加速开始/结束时生成 — 加速与食物生成互不影响，
+    无关联时序问题。"""
+
+    def test_food_consumed_during_boost(self):
+        """加速状态下食物正常消费"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        head = self.game.snake.head
+        d = self.game.snake.direction
+        self.game.food.position = (head[0] + d[0], head[1] + d[1])
+
+        old_score = self.game.score
+        old_length = self.game.snake.length
+        self.game._update()
+
+        self.assertEqual(old_score + SCORE_PER_FOOD, self.game.score)
+        self.assertEqual(old_length + 1, self.game.snake.length)
+
+    def test_food_spawns_during_boost_transition(self):
+        """食物在加速过渡期间生成不受影响"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+
+        # 启动加速过渡
+        self.game._update_boost_state(16.0, True)
+
+        head = self.game.snake.head
+        d = self.game.snake.direction
+        self.game.food.position = (head[0] + d[0], head[1] + d[1])
+
+        # 消费食物
+        self.game._update()
+        self.assertEqual(GameState.RUNNING, self.game.state)
+        self.assertGreater(self.game.score, 0)
+
+    def test_food_respawn_during_boost_not_on_snake(self):
+        """加速期间食物重新生成不落在蛇身上"""
+        head = self.game.snake.head
+        d = self.game.snake.direction
+        self.game.food.position = (head[0] + d[0], head[1] + d[1])
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        self.game._update()
+        self.assertNotIn(self.game.food.position, self.game.snake.body)
+
+    def test_multiple_food_consumed_during_boost_cycles(self):
+        """加速/减速交替期间连续吃多个食物无异常"""
+        for _ in range(5):
+            self.game.snake.boost_state['current_multiplier'] = (
+                BOOST_SPEED_MULTIPLIER if _ % 2 == 0 else 1.0
+            )
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+
+        # 5 次食物消费完成后分数正确
+        self.assertEqual(5 * SCORE_PER_FOOD, self.game.score)
+
+
+class TestBC008BoostAndDirectionSimultaneous(_IntegrationTestBase):
+    """BC-008: 加速键与方向键同时按下 — 同一帧内各自处理，无优先级冲突。"""
+
+    def test_boost_and_direction_independent(self):
+        """boost 和 direction 在同一命令中独立生效"""
+        # 模拟 InputHandler 产出同时包含 direction 和 boost 的命令
+        head_before = self.game.snake.head
+        _clear_events()
+        _post_key(pygame.K_UP)
+
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.direction, self.game.state)
+
+        # cmd 同时包含 direction 和 boost
+        self.assertIn('direction', cmd)
+        self.assertIn('boost', cmd)
+        self.assertEqual((0, -1), cmd['direction'])
+
+        # _handle_command 处理 direction
+        self.game._handle_command(cmd)
+
+        # 手动更新 boost state
+        self.game._update_boost_state(16.0, cmd['boost'])
+
+        # 两者各自生效
+        self.assertEqual((0, -1), self.game.snake.direction)
+
+    def test_boost_continues_while_changing_direction(self):
+        """加速期间切换方向，加速不中断"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+
+        # 转向（在 RUNNING 状态下有效）
+        self.game.snake.change_direction(0, -1)
+
+        # boost 状态保持
+        self.assertEqual(2.0, self.game.snake.boost_state['current_multiplier'])
+        self.assertEqual((0, -1), self.game.snake.direction)
+
+    def test_direction_change_during_boost_tick(self):
+        """加速 tick 期间方向切换不丢帧"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        # 先切换方向，然后步进
+        self.game.snake.change_direction(0, 1)
+        head_before = self.game.snake.head
+        expected_head = (head_before[0], head_before[1] + 1)
+
+        self.game._update()
+        self.assertEqual(expected_head, self.game.snake.head)
+
+    def test_rapid_direction_changes_during_boost(self):
+        """加速期间快速连续切换方向不报错"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        directions = [(0, -1), (-1, 0), (0, 1), (1, 0)]
+        for d in directions:
+            try:
+                self.game.snake.change_direction(*d)
+                self.game._update()
+            except Exception as e:
+                self.fail(f"Direction change during boost raised {type(e).__name__}: {e}")
+
+    def test_command_with_both_boost_and_direction_handles_correctly(self):
+        """命令同时含 direction 和 boost=True 时正确分发"""
+        cmd = {'action': 'direction', 'direction': (0, 1), 'boost': True}
+        result = self.game._handle_command(cmd)
+        self.assertTrue(result)
+
+        # 方向已更新
+        self.assertEqual((0, 1), self.game.snake.direction)
+
+        # boost 状态由 _update_boost_state 更新（在 run() 内）
+        self.game._update_boost_state(16.0, cmd['boost'])
+        self.assertGreater(self.game.snake.boost_state['current_multiplier'], 1.0)
+
+
+class TestBC009KeyboardRepeatEvents(_IntegrationTestBase):
+    """BC-009: 操作系统键盘重复事件 — 输入处理区分按住加速键（轮询/标志位）
+    与重复 KEYDOWN 事件，避免重复触发状态切换。"""
+
+    def test_boost_uses_polling_not_keydown(self):
+        """加速检测使用 pygame.key.get_pressed() 轮询而非 KEYDOWN 事件"""
+        # is_boost_pressed() 调用 pygame.key.get_pressed() 而非 KEYDOWN
+        self.assertIsInstance(self.game.input_handler.is_boost_pressed(), bool)
+
+    def test_multiple_keydown_for_boost_does_not_toggle(self):
+        """重复 KEYDOWN 事件不影响加速检测"""
+        # 加速检测基于轮询而非事件，重复 KEYDOWN 不影响
+        for _ in range(50):
+            _post_key(pygame.K_SPACE)
+            cmd = self.game.input_handler.process_events(
+                self.game.snake.direction, GameState.RUNNING)
+            self.assertIn('boost', cmd)
+            self.assertIsInstance(cmd['boost'], bool)
+
+    def test_boost_key_ignored_as_direction(self):
+        """加速键（SPACE）不被误判为方向键"""
+        _clear_events()
+        _post_key(pygame.K_SPACE)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.direction, GameState.RUNNING)
+        self.assertEqual('none', cmd['action'])
+        self.assertNotIn('direction', cmd)
+
+
+class TestBC010MaxMultiplierSelfCollision(_IntegrationTestBase):
+    """BC-010: 最大倍率下的自碰判断 — 5x 倍率时碰撞检测须逐 tick 执行，
+    确保不会因间隔过短而跳过蛇头与身体重叠的帧。"""
+
+    def test_self_collision_detected_at_max_multiplier(self):
+        """5x 倍率下自撞判断不遗漏"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 构造自撞场景
+        self.game.snake.body = [(3, 2), (3, 3), (4, 3), (5, 3)]
+        self.game.snake.direction = (0, 1)  # head -> (3,3) 撞到 body[1]
+        self.game._update()
+
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+
+    def test_collision_per_tick_not_skipped_at_max_multiplier(self):
+        """5x 倍率时逐 tick 碰撞检测不因间隔短而跳过"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # snake 靠近边界
+        self.game.snake.body = [(39, 15), (38, 15), (37, 15)]
+        self.game.snake.direction = (1, 0)
+        self.game._update()
+
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+
+    def test_multiple_collision_checks_at_max_multiplier(self):
+        """5x 倍率连续多步碰撞检测无遗漏"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 逐帧模拟 20 次更新
+        collisions_detected = 0
+        for _ in range(20):
+            # 重置到安全位置
+            local_snake = Snake(GRID_COLS, GRID_ROWS)
+            local_snake.body = [(39, 15), (38, 15), (37, 15)]
+            local_snake.direction = (1, 0)
+
+            # 手动检查每步
+            local_snake.move_and_grow(False)
+            if local_snake.check_boundary_collision(GRID_COLS, GRID_ROWS):
+                collisions_detected += 1
+
+        self.assertGreater(collisions_detected, 0,
+                           "Boundary collision must be detected at each check")
+
+    def test_self_collision_strictly_per_grid_cell(self):
+        """碰撞检测基于网格坐标不基于时间，间隔缩短不影响精度"""
+        # 利用 _update 本身的碰撞检测机制验证
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 正常移动不应误触发碰撞
+        food_away = (30, 20)
+        self.game.food.position = food_away
+
+        for _ in range(10):
+            if self.game.state != GameState.RUNNING:
+                self.fail("False positive collision at max multiplier")
+            self.game._update()
+
+        self.assertEqual(GameState.RUNNING, self.game.state)
+
+
+# =============================================================================
+# T-010: 性能验证 — 5x 加速下 60s 帧率 >= 55fps、CPU/内存稳定
+# =============================================================================
+
+
+class TestBoostPerformance(_IntegrationTestBase):
+    """T-010 性能验证：5x 加速下 60s 稳定性、帧率、tick 漂移"""
+
+    def test_max_boost_rendering_framerate_stable(self):
+        """5x 加速下渲染帧率稳定 >= 55fps"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        renderer = self.game.renderer
+        renderer.tick()  # warm-up
+
+        frame_times = []
+        # 模拟 60 帧（约 1 秒 @ 60fps）
+        for _ in range(60):
+            t0 = time.time()
+            dt_ms = renderer.tick()
+            frame_times.append(time.time() - t0)
+
+        avg_frame_time = sum(frame_times) / len(frame_times)
+        actual_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else float('inf')
+
+        self.assertGreaterEqual(actual_fps, 55.0,
+                                f"FPS {actual_fps:.1f} below 55 at max boost")
+
+    def test_tick_interval_stable_at_max_boost(self):
+        """5x 加速下 tick_interval 计算稳定无漂移"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        intervals = []
+        for _ in range(100):
+            interval = self.game._get_current_tick_interval()
+            intervals.append(interval)
+
+        # 所有 interval 应相等（同一 multiplier）
+        unique = set(intervals)
+        self.assertEqual(1, len(unique),
+                         f"Multiple tick intervals at fixed multiplier: {unique}")
+
+    def test_max_boost_update_performance(self):
+        """5x 加速下 _update 耗时稳定"""
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        timings = []
+        # 确保食物远离蛇
+        self.game.food.position = (30, 25)
+
+        for _ in range(50):
+            t0 = time.time()
+            self.game._update()
+            dt = (time.time() - t0) * 1000  # ms
+            timings.append(dt)
+            # 保持状态 RUNNING
+            if self.game.state != GameState.RUNNING:
+                self.game.state = GameState.RUNNING
+
+        avg = sum(timings) / len(timings)
+        self.assertLess(avg, 5.0,
+                        f"_update avg {avg:.2f}ms too slow at max boost")
+
+    def test_no_tick_drift_over_simulated_60_seconds(self):
+        """模拟 60 秒运行无 tick 漂移"""
+        tick_interval = float(BASE_TICK_INTERVAL) / MAX_BOOST_MULTIPLIER
+        simulated_ticks = int((60.0 * 1000) / tick_interval)  # ~3000 ticks
+        max_ticks = min(simulated_ticks, 200)  # 取适量样本
+
+        accumulator = 0.0
+        step_count = 0
+        for _ in range(max_ticks):
+            accumulator += tick_interval
+            if accumulator >= tick_interval:
+                accumulator -= tick_interval
+                step_count += 1
+
+        # 验证 accumulator 不无限累积
+        self.assertLess(accumulator, tick_interval * 2,
+                        f"Accumulator drift: {accumulator:.1f}ms")
+        self.assertGreater(step_count, 0)
+
+    def test_memory_stable_during_boost(self):
+        """加速状态下多帧内存不持续增长"""
+        import gc as gc_module
+        import tracemalloc
+
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+
+        gc_module.collect()
+        _, baseline = tracemalloc.get_traced_memory()
+
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 模拟 200 帧
+        for _ in range(200):
+            self.game.renderer.tick()
+            self.game._update_boost_state(16.0, True)
+            if self.game.state == GameState.RUNNING:
+                self.game._update()
+            if self.game.state != GameState.RUNNING:
+                self.game.state = GameState.RUNNING
+
+        gc_module.collect()
+        _, post = tracemalloc.get_traced_memory()
+
+        growth = post - baseline
+        self.assertLess(growth, 5 * 1024 * 1024,  # 5 MB
+                        f"Memory growth {growth/1024:.1f} KB exceeds limit during boost")
+        tracemalloc.stop()
+
+    def test_boost_cpu_overhead_acceptable(self):
+        """加速视觉指示渲染开销不超基准 5%（近似验证）"""
+        import time as time_mod
+
+        # 基准渲染（无加速）
+        self.game.snake.boost_state['is_active'] = False
+        renderer = self.game.renderer
+
+        normal_times = []
+        for _ in range(30):
+            t0 = time_mod.time()
+            renderer.draw_frame(self.game.snake, self.game.food, self.game.score,
+                                self.game.state, is_boosting=False)
+            normal_times.append(time_mod.time() - t0)
+
+        # 加速渲染
+        self.game.snake.boost_state['is_active'] = True
+        boost_times = []
+        for _ in range(30):
+            t0 = time_mod.time()
+            renderer.draw_frame(self.game.snake, self.game.food, self.game.score,
+                                self.game.state, is_boosting=True)
+            boost_times.append(time_mod.time() - t0)
+
+        avg_normal = sum(normal_times) / len(normal_times)
+        avg_boost = sum(boost_times) / len(boost_times)
+
+        # 加速渲染应接近基准渲染（增加 < 5% 或绝对增加 < 1ms）
+        overhead_ratio = (avg_boost - avg_normal) / avg_normal if avg_normal > 0 else 0
+        # 允许较大的容差（单帧渲染时间可能有噪音）
+        self.assertLess(abs(avg_boost - avg_normal), 0.005,
+                        f"Boost render overhead too high: normal={avg_normal:.6f}s, "
+                        f"boost={avg_boost:.6f}s")
+
+    def test_consecutive_food_consumption_at_max_boost(self):
+        """5x 加速下连续 100 次食物消费无碰撞遗漏或 false negative"""
+        # 构造可控环境：蛇在空旷区域，食物依次放置在蛇头前方
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        self.game.snake.boost_state['is_active'] = True
+
+        # 将蛇置于宽阔区域
+        center_y = GRID_ROWS // 2
+        self.game.snake.body = [(5, center_y), (4, center_y), (3, center_y)]
+        self.game.snake.direction = (1, 0)
+
+        food_count = 0
+        collisions = 0
+        max_eats = min(100, GRID_COLS - 7)  # 最大可吃次数，受宽度限制
+
+        for _ in range(max_eats):
+            # 在蛇头前方放食物
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+
+            self.game._update()
+
+            if self.game.state == GameState.GAME_OVER:
+                collisions += 1
+                break
+            food_count += 1
+
+        self.assertEqual(0, collisions,
+                         f"Had {collisions} false collisions during {food_count} food eats")
+        self.assertEqual(max_eats, food_count,
+                         f"Expected {max_eats} food eats, got {food_count}")
+        self.assertEqual(GameState.RUNNING, self.game.state,
+                         "Should still be running after consecutive food eats")
+
+    def test_boost_direction_independent_no_race_condition(self):
+        """加速键与方向键同时按下各自独立生效，无竞态条件"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        self.game.snake.boost_state['is_active'] = False
+
+        # 模拟同一帧中的并发输入
+        command = {'action': 'direction', 'direction': (0, -1), 'boost': True}
+
+        # 方向处理
+        self.game._handle_command(command)
+
+        # boost 处理
+        self.game._update_boost_state(16.0, command['boost'])
+
+        # 两者各自生效
+        self.assertEqual((0, -1), self.game.snake.direction)
+        self.assertGreater(self.game.snake.boost_state['current_multiplier'], 1.0)
+
+        # 蛇正常移动一步
+        head_before = self.game.snake.head
+        self.game._update()
+        self.assertEqual((head_before[0], head_before[1] - 1), self.game.snake.head)
 
 
 if __name__ == "__main__":

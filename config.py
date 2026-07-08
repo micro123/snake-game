@@ -1,12 +1,17 @@
 """
 游戏常量配置模块
 
-定义窗口尺寸、网格参数、游戏参数、窗口标题、HUD 高度、
+定义窗口尺寸、网格参数、游戏参数、加速配置、窗口标题、HUD 高度、
 GameState 游戏状态枚举及 COLORS 颜色类。
-本模块不依赖 Pygame，可独立导入使用。
 """
 
+import logging
 from enum import Enum, auto
+
+import pygame
+
+# 模块级 logger
+_logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -42,9 +47,34 @@ GRID_ROWS: int = 30
 # =============================================================================
 # 游戏参数
 # =============================================================================
-FPS: int = 10
+FPS: int = 10  # 保留向后兼容：原有逻辑 tick FPS
 INITIAL_SNAKE_LENGTH: int = 3
 SCORE_PER_FOOD: int = 10
+
+# =============================================================================
+# 加速配置 (Snake Speed Boost)
+# =============================================================================
+
+# 加速键绑定 (Pygame 键码)
+BOOST_KEY: int = pygame.K_SPACE
+
+# 加速倍率 (默认 2x，范围 [1.0, MAX_BOOST_MULTIPLIER])
+BOOST_SPEED_MULTIPLIER: float = 2.0
+
+# 加速倍率上限
+MAX_BOOST_MULTIPLIER: float = 5.0
+
+# 基准逻辑 tick 间隔 (ms)，原 FPS=10 对应 1000/10=100ms
+BASE_TICK_INTERVAL: int = 100
+
+# 渲染帧率 (固定 60 fps，与逻辑 tick 解耦)
+RENDER_FPS: int = 60
+
+# 平滑加速过渡时长 (秒)，0 表示瞬时切换
+BOOST_TRANSITION_SECONDS: float = 0.15
+
+# 单帧最大逻辑追赶步数 (防止 spiral-of-death)
+MAX_CATCHUP_STEPS: int = 5
 
 # =============================================================================
 # 窗口标题
@@ -71,3 +101,97 @@ class COLORS:
     GRID_LINE: tuple[int, int, int] = (40, 40, 60)
     TEXT: tuple[int, int, int] = (255, 255, 255)
     OVERLAY_BG: tuple[int, int, int, int] = (0, 0, 0, 180)
+
+    # 加速状态视觉指示颜色
+    BOOST_SNAKE_BODY: tuple[int, int, int] = (255, 140, 0)   # 橙色蛇身
+    BOOST_SNAKE_HEAD: tuple[int, int, int] = (255, 215, 50)  # 金色蛇头
+    BOOST_HUD_TEXT: tuple[int, int, int] = (255, 200, 50)    # 亮金色 HUD 文字
+
+
+# =============================================================================
+# 配置校验 (模块导入时自动执行)
+# =============================================================================
+
+
+def _validate_boost_config() -> None:
+    """模块加载时自动校验加速配置常量。
+
+    对越界值进行 clamp 并记录 logging.WARNING，确保运行时参数始终在安全范围内。
+    校验顺序考虑了常量间的依赖关系（如 BOOST_SPEED_MULTIPLIER 依赖 MAX_BOOST_MULTIPLIER）。
+    """
+    global BOOST_SPEED_MULTIPLIER, MAX_BOOST_MULTIPLIER, BASE_TICK_INTERVAL
+    global RENDER_FPS, BOOST_TRANSITION_SECONDS, MAX_CATCHUP_STEPS, BOOST_KEY
+
+    # 1. MAX_BOOST_MULTIPLIER (需先校验，后续 BOOST_SPEED_MULTIPLIER 依赖此项)
+    if MAX_BOOST_MULTIPLIER <= 0:
+        _logger.warning(
+            "CFG-001: MAX_BOOST_MULTIPLIER=%.1f <= 0, reset to 5.0",
+            MAX_BOOST_MULTIPLIER,
+        )
+        MAX_BOOST_MULTIPLIER = 5.0
+
+    # 2. BOOST_SPEED_MULTIPLIER: 必须在 [1.0, MAX_BOOST_MULTIPLIER] 区间
+    if BOOST_SPEED_MULTIPLIER < 1.0:
+        _logger.warning(
+            "CFG-001: BOOST_SPEED_MULTIPLIER=%.1f < 1.0, clamped to 1.0",
+            BOOST_SPEED_MULTIPLIER,
+        )
+        BOOST_SPEED_MULTIPLIER = 1.0
+    elif BOOST_SPEED_MULTIPLIER > MAX_BOOST_MULTIPLIER:
+        _logger.warning(
+            "CFG-001: BOOST_SPEED_MULTIPLIER=%.1f > MAX_BOOST_MULTIPLIER=%.1f, clamped to %.1f",
+            BOOST_SPEED_MULTIPLIER,
+            MAX_BOOST_MULTIPLIER,
+            MAX_BOOST_MULTIPLIER,
+        )
+        BOOST_SPEED_MULTIPLIER = MAX_BOOST_MULTIPLIER
+
+    # 3. BASE_TICK_INTERVAL: 不低于 20ms
+    if BASE_TICK_INTERVAL < 20:
+        _logger.warning(
+            "CFG-003: BASE_TICK_INTERVAL=%d < 20, reset to 100",
+            BASE_TICK_INTERVAL,
+        )
+        BASE_TICK_INTERVAL = 100
+
+    # 4. RENDER_FPS: 必须 > 0
+    if RENDER_FPS <= 0:
+        _logger.warning(
+            "RENDER_FPS=%d <= 0, reset to 60",
+            RENDER_FPS,
+        )
+        RENDER_FPS = 60
+
+    # 5. BOOST_TRANSITION_SECONDS: >= 0 (可为 0 表示无过渡)
+    if BOOST_TRANSITION_SECONDS < 0:
+        _logger.warning(
+            "BOOST_TRANSITION_SECONDS=%.3f < 0, clamped to 0.0 (instant transition)",
+            BOOST_TRANSITION_SECONDS,
+        )
+        BOOST_TRANSITION_SECONDS = 0.0
+
+    # 6. MAX_CATCHUP_STEPS: >= 1
+    if MAX_CATCHUP_STEPS < 1:
+        _logger.warning(
+            "MAX_CATCHUP_STEPS=%d < 1, reset to 5",
+            MAX_CATCHUP_STEPS,
+        )
+        MAX_CATCHUP_STEPS = 5
+
+    # 7. BOOST_KEY: 有效 Pygame 键码 (正整数)
+    try:
+        if not isinstance(BOOST_KEY, int) or BOOST_KEY < 0:
+            _logger.warning(
+                "CFG-002: BOOST_KEY=%s invalid keycode, fallback to pygame.K_SPACE",
+                repr(BOOST_KEY),
+            )
+            BOOST_KEY = pygame.K_SPACE
+    except Exception:
+        _logger.warning(
+            "CFG-002: BOOST_KEY validation failed, fallback to pygame.K_SPACE",
+        )
+        BOOST_KEY = pygame.K_SPACE
+
+
+# 模块导入时自动执行配置校验
+_validate_boost_config()

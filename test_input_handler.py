@@ -3,7 +3,8 @@ InputHandler 类单元测试
 
 覆盖：初始化暂停状态、方向键映射、反向拦截、QUIT 事件、R/Q 键仅在
 GAME_OVER/VICTORY 时生效、per-frame 单方向缓冲、焦点丢失/恢复、空队列返回、
-非方向键忽略、_is_reverse 静态方法。
+非方向键忽略、_is_reverse 静态方法、加速键轮询检测（is_boost_pressed）、
+boost 字段输出、焦点丢失清除 _boost_active 标志。
 
 使用 Python 标准库 unittest 框架，依赖 Pygame。
 """
@@ -158,11 +159,11 @@ class TestProcessEventsDirection(unittest.TestCase):
         self.assertEqual('direction', cmd['action'])
         self.assertEqual((1, 0), cmd['direction'])
 
-    def test_direction_command_has_no_extra_keys(self):
-        """方向命令仅含 action 和 direction 两个键"""
+    def test_direction_command_keys(self):
+        """方向命令含 action、direction 和 boost 三个键"""
         _post_key(pygame.K_UP)
         cmd = self.handler.process_events((1, 0), GameState.RUNNING)
-        self.assertEqual({'action', 'direction'}, set(cmd.keys()))
+        self.assertEqual({'action', 'direction', 'boost'}, set(cmd.keys()))
 
 
 class TestReverseIntercept(unittest.TestCase):
@@ -265,12 +266,12 @@ class TestRKey(unittest.TestCase):
         cmd = self.handler.process_events((1, 0), GameState.RUNNING)
         self.assertEqual('none', cmd['action'])
 
-    def test_restart_command_has_no_direction(self):
-        """restart 命令不含 direction 键"""
+    def test_restart_command_keys(self):
+        """restart 命令不含 direction 键但含 boost"""
         _post_key(pygame.K_r)
         cmd = self.handler.process_events((1, 0), GameState.GAME_OVER)
         self.assertNotIn('direction', cmd)
-        self.assertEqual({'action'}, set(cmd.keys()))
+        self.assertEqual({'action', 'boost'}, set(cmd.keys()))
 
 
 class TestQKey(unittest.TestCase):
@@ -298,12 +299,12 @@ class TestQKey(unittest.TestCase):
         cmd = self.handler.process_events((1, 0), GameState.RUNNING)
         self.assertEqual('none', cmd['action'])
 
-    def test_q_quit_command_has_no_direction(self):
-        """Q 键 quit 命令不含 direction 键"""
+    def test_q_quit_command_keys(self):
+        """Q 键 quit 命令不含 direction 键但含 boost"""
         _post_key(pygame.K_q)
         cmd = self.handler.process_events((1, 0), GameState.GAME_OVER)
         self.assertNotIn('direction', cmd)
-        self.assertEqual({'action'}, set(cmd.keys()))
+        self.assertEqual({'action', 'boost'}, set(cmd.keys()))
 
 
 class TestDirectionBuffering(unittest.TestCase):
@@ -612,6 +613,213 @@ class TestEdgeCases(unittest.TestCase):
 
         self.assertTrue(h1.is_paused())
         self.assertFalse(h2.is_paused())
+
+
+# =============================================================================
+# 加速键轮询测试 (T-004: Boost Key Polling)
+# =============================================================================
+
+
+class TestBoostInit(unittest.TestCase):
+    """测试 _boost_active 和 is_boost_pressed 初始化"""
+
+    def setUp(self):
+        _clear_queue()
+        self.handler = InputHandler()
+
+    def test_boost_active_initialized_false(self):
+        """_boost_active 初始为 False"""
+        self.assertFalse(self.handler._boost_active)
+
+    def test_is_boost_pressed_returns_false_initially(self):
+        """无键按下时 is_boost_pressed 返回 False（前提：BOOST_KEY 物理未按下）"""
+        self.assertFalse(self.handler.is_boost_pressed())
+
+    def test_is_boost_pressed_returns_bool(self):
+        """is_boost_pressed 返回布尔值"""
+        self.assertIsInstance(self.handler.is_boost_pressed(), bool)
+
+
+class TestBoostPaused(unittest.TestCase):
+    """测试暂停状态下 is_boost_pressed 返回 False"""
+
+    def setUp(self):
+        _clear_queue()
+        self.handler = InputHandler()
+
+    def test_is_boost_pressed_false_when_paused(self):
+        """_paused=True 时 is_boost_pressed 返回 False"""
+        self.handler._paused = True
+        self.assertFalse(self.handler.is_boost_pressed())
+
+    def test_is_boost_pressed_false_after_focus_lost(self):
+        """WINDOWFOCUSLOST 后 is_boost_pressed 返回 False"""
+        _post_window_event(pygame.WINDOWFOCUSLOST)
+        self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertFalse(self.handler.is_boost_pressed())
+
+    def test_is_boost_pressed_restored_after_focus_gained(self):
+        """WINDOWFOCUSGAINED 后 is_boost_pressed 可正常返回（不再受暂停限制）"""
+        _post_window_event(pygame.WINDOWFOCUSLOST)
+        self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertTrue(self.handler.is_paused())
+
+        _clear_queue()
+        _post_window_event(pygame.WINDOWFOCUSGAINED)
+        self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertFalse(self.handler.is_paused())
+        # 此时 _paused=False，is_boost_pressed 返回物理按键状态
+        self.assertIsInstance(self.handler.is_boost_pressed(), bool)
+
+
+class TestBoostCommandField(unittest.TestCase):
+    """测试 process_events 命令字典包含 boost 字段"""
+
+    def setUp(self):
+        _clear_queue()
+        self.handler = InputHandler()
+
+    def test_direction_command_includes_boost(self):
+        """方向命令包含 boost 字段"""
+        _post_key(pygame.K_UP)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertIn('boost', cmd)
+        self.assertIsInstance(cmd['boost'], bool)
+
+    def test_none_command_includes_boost(self):
+        """空队列 none 命令包含 boost 字段"""
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertIn('boost', cmd)
+        self.assertIsInstance(cmd['boost'], bool)
+
+    def test_quit_command_includes_boost(self):
+        """QUIT 命令包含 boost 字段"""
+        _post_event(pygame.QUIT)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertIn('boost', cmd)
+        self.assertIsInstance(cmd['boost'], bool)
+
+    def test_restart_command_includes_boost(self):
+        """restart 命令包含 boost 字段"""
+        _post_key(pygame.K_r)
+        cmd = self.handler.process_events((1, 0), GameState.GAME_OVER)
+        self.assertIn('boost', cmd)
+        self.assertIsInstance(cmd['boost'], bool)
+
+    def test_q_quit_command_includes_boost(self):
+        """Q 键 quit 命令包含 boost 字段"""
+        _post_key(pygame.K_q)
+        cmd = self.handler.process_events((1, 0), GameState.GAME_OVER)
+        self.assertIn('boost', cmd)
+        self.assertIsInstance(cmd['boost'], bool)
+
+    def test_pause_command_includes_boost(self):
+        """pause 命令包含 boost 字段"""
+        _post_window_event(pygame.WINDOWFOCUSLOST)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertIn('boost', cmd)
+        self.assertIsInstance(cmd['boost'], bool)
+
+    def test_resume_command_includes_boost(self):
+        """resume 命令包含 boost 字段"""
+        _post_window_event(pygame.WINDOWFOCUSGAINED)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertIn('boost', cmd)
+        self.assertIsInstance(cmd['boost'], bool)
+
+
+class TestBoostFocusLost(unittest.TestCase):
+    """测试 WINDOWFOCUSLOST 清除 _boost_active 标志"""
+
+    def setUp(self):
+        _clear_queue()
+        self.handler = InputHandler()
+
+    def test_focus_lost_clears_boost_active_flag(self):
+        """WINDOWFOCUSLOST 事件触发后 _boost_active 被置为 False"""
+        _post_window_event(pygame.WINDOWFOCUSLOST)
+        self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertFalse(self.handler._boost_active)
+
+
+class TestBoostExistingKeysUnaffected(unittest.TestCase):
+    """测试现有方向键、R/Q 键功能不受 boost 变更影响"""
+
+    def setUp(self):
+        _clear_queue()
+        self.handler = InputHandler()
+
+    def test_up_key_still_returns_correct_direction(self):
+        """按上键仍返回 (0, -1)"""
+        _post_key(pygame.K_UP)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((0, -1), cmd['direction'])
+
+    def test_down_key_still_returns_correct_direction(self):
+        """按下键仍返回 (0, 1)"""
+        _post_key(pygame.K_DOWN)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((0, 1), cmd['direction'])
+
+    def test_left_key_still_returns_correct_direction(self):
+        """按左键仍返回 (-1, 0)"""
+        _post_key(pygame.K_LEFT)
+        cmd = self.handler.process_events((0, -1), GameState.RUNNING)
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((-1, 0), cmd['direction'])
+
+    def test_right_key_still_returns_correct_direction(self):
+        """按右键仍返回 (1, 0)"""
+        _post_key(pygame.K_RIGHT)
+        cmd = self.handler.process_events((0, -1), GameState.RUNNING)
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((1, 0), cmd['direction'])
+
+    def test_reverse_still_intercepted(self):
+        """反向方向仍被拦截"""
+        _post_key(pygame.K_LEFT)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertEqual('none', cmd['action'])
+
+    def test_r_key_still_restart_in_game_over(self):
+        """GAME_OVER 状态下 R 键仍返回 restart"""
+        _post_key(pygame.K_r)
+        cmd = self.handler.process_events((1, 0), GameState.GAME_OVER)
+        self.assertEqual('restart', cmd['action'])
+
+    def test_q_key_still_quit_in_game_over(self):
+        """GAME_OVER 状态下 Q 键仍返回 quit"""
+        _post_key(pygame.K_q)
+        cmd = self.handler.process_events((1, 0), GameState.GAME_OVER)
+        self.assertEqual('quit', cmd['action'])
+
+    def test_r_key_still_ignored_in_running(self):
+        """RUNNING 状态下 R 键仍被忽略"""
+        _post_key(pygame.K_r)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertEqual('none', cmd['action'])
+
+    def test_q_key_still_ignored_in_running(self):
+        """RUNNING 状态下 Q 键仍被忽略"""
+        _post_key(pygame.K_q)
+        cmd = self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertEqual('none', cmd['action'])
+
+    def test_direction_buffering_still_works(self):
+        """per-frame 单方向缓冲仍正常工作"""
+        _post_key(pygame.K_LEFT)
+        _post_key(pygame.K_RIGHT)
+        cmd = self.handler.process_events((0, 1), GameState.RUNNING)
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((1, 0), cmd['direction'])
+
+    def test_focus_loss_still_pauses(self):
+        """失焦仍设置暂停"""
+        _post_window_event(pygame.WINDOWFOCUSLOST)
+        self.handler.process_events((1, 0), GameState.RUNNING)
+        self.assertTrue(self.handler.is_paused())
 
 
 if __name__ == "__main__":
