@@ -10,7 +10,9 @@ import pygame
 
 from config import (
     BASE_TICK_INTERVAL, BOOST_SPEED_MULTIPLIER, BOOST_TRANSITION_SECONDS,
-    MAX_BOOST_MULTIPLIER, MAX_CATCHUP_STEPS,
+    DIFFICULTY_INCREMENT, MAX_BOOST_MULTIPLIER, MAX_CATCHUP_STEPS,
+    MAX_DIFFICULTY_MULTIPLIER, MIN_TICK_INTERVAL,
+    SCORE_THRESHOLD_INTERVAL,
     WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE,
     GRID_COLS, GRID_ROWS,
     INITIAL_SNAKE_LENGTH, SCORE_PER_FOOD,
@@ -63,6 +65,8 @@ class Game:
 
         self.score: int = 0
         self.state: GameState = GameState.RUNNING
+        self.difficulty_level: int = 0
+        self.difficulty_multiplier: float = 0.0
 
         # 生成首个食物（排除蛇身占据的格子）
         self.food.respawn(self.snake.body)
@@ -139,9 +143,17 @@ class Game:
                 accumulator = 0.0
 
             # 5. 图层化渲染
+            # 计算综合倍率（用于 HUD 显示）
+            effective_multiplier = (
+                1.0
+                + self.difficulty_multiplier
+                + (self.snake.boost_multiplier - 1.0)
+            )
             self.renderer.draw_frame(
                 self.snake, self.food, self.score, self.state,
                 is_boosting=self.snake.is_boosting,
+                difficulty_level=self.difficulty_level,
+                effective_multiplier=effective_multiplier,
             )
             pygame.display.flip()
 
@@ -183,6 +195,21 @@ class Game:
     # 逻辑更新
     # ------------------------------------------------------------------
 
+    def _update_difficulty(self) -> None:
+        """根据当前分数重新计算难度等级和难度倍率。
+
+        level = score // SCORE_THRESHOLD_INTERVAL
+        multiplier = min(level * DIFFICULTY_INCREMENT, MAX_DIFFICULTY_MULTIPLIER)
+
+        幂等：相同 score 反复调用结果不变。基于 score 计算 level 再乘 increment，
+        无浮点累加误差风险。
+        """
+        self.difficulty_level = self.score // SCORE_THRESHOLD_INTERVAL
+        self.difficulty_multiplier = min(
+            self.difficulty_level * DIFFICULTY_INCREMENT,
+            MAX_DIFFICULTY_MULTIPLIER,
+        )
+
     def _update(self) -> None:
         """更新游戏逻辑：碰撞检测 -> 移动 -> 状态迁移。
 
@@ -211,9 +238,10 @@ class Game:
         # 移动蛇（grow_flag=True 时保留尾部，身体净增1节）
         self.snake.move_and_grow(grow_flag)
 
-        # 吃到食物：加分 + 重新生成
+        # 吃到食物：加分 + 难度更新 + 重新生成
         if grow_flag:
             self.score += SCORE_PER_FOOD
+            self._update_difficulty()
             if not self.food.respawn(self.snake.body):
                 self.state = GameState.VICTORY
                 self._reset_boost()
@@ -280,30 +308,36 @@ class Game:
         self.snake.boost_state['is_active'] = current > 1.01
 
     def _get_current_tick_interval(self) -> float:
-        """根据当前加速倍率计算实际逻辑 tick 间隔(ms)。
+        """根据难度倍率和加速倍率计算实际逻辑 tick 间隔(ms)。
 
-        interval = BASE_TICK_INTERVAL / boost_multiplier，下限 20ms。
+        公式: interval = BASE_TICK_INTERVAL / (1 + difficulty + boost_extra)
+        其中 boost_extra = boost_multiplier - 1.0。
+
+        施加 max(result, MIN_TICK_INTERVAL) 硬下限，确保 tick 不低于 20ms。
         防御性校验：interval 为 NaN / 零 / 负值时回退到 BASE_TICK_INTERVAL。
 
         Returns:
-            当前逻辑 tick 间隔（毫秒），保证 >= 20.0
+            当前逻辑 tick 间隔（毫秒），保证 >= MIN_TICK_INTERVAL
         """
         import logging
         _logger = logging.getLogger(__name__)
 
-        multiplier = self.snake.boost_multiplier
+        boost_extra = self.snake.boost_multiplier - 1.0
+        effective = 1.0 + self.difficulty_multiplier + boost_extra
         try:
-            interval = BASE_TICK_INTERVAL / multiplier
+            interval = BASE_TICK_INTERVAL / effective
             if interval <= 0 or interval != interval:  # NaN 检查
                 raise ValueError("invalid interval: {}".format(interval))
         except (ValueError, ZeroDivisionError):
             _logger.error(
-                "RT-001: tick_interval computed as invalid (multiplier=%.1f), "
+                "RT-001: tick_interval computed as invalid "
+                "(effective=%.1f, difficulty=%.1f, boost=%.1f), "
                 "fallback to BASE_TICK_INTERVAL (%d)",
-                multiplier, BASE_TICK_INTERVAL,
+                effective, self.difficulty_multiplier,
+                self.snake.boost_multiplier, BASE_TICK_INTERVAL,
             )
             interval = float(BASE_TICK_INTERVAL)
-        return max(20.0, float(interval))
+        return max(float(MIN_TICK_INTERVAL), float(interval))
 
     def _reset_boost(self) -> None:
         """强制复位加速状态到初始值。
@@ -334,4 +368,6 @@ class Game:
         self.food.respawn(self.snake.body)
         self.score = 0
         self.state = GameState.RUNNING
+        self.difficulty_level = 0
+        self.difficulty_multiplier = 0.0
         self._reset_boost()

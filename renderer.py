@@ -162,16 +162,23 @@ class Renderer:
         )
         pygame.draw.rect(self.screen, COLORS.FOOD, rect)
 
-    def draw_hud(self, score: int, is_boosting: bool = False) -> None:
-        """绘制 HUD：在窗口顶部显示当前分数，加速状态下在右侧显示 'BOOST' 文字。
+    def draw_hud(
+        self,
+        score: int,
+        is_boosting: bool = False,
+        difficulty_level: int = 0,
+        effective_multiplier: float = 1.0,
+    ) -> None:
+        """绘制 HUD：左侧分数、居中难度信息、右侧 BOOST 文字（条件）。
 
         先绘制深色半透明背景条（HUD_HEIGHT 高度通栏），
-        再在其上左侧渲染 "Score: {score}" 文字。
-        当 is_boosting=True 时，在 HUD 右侧渲染 "BOOST" 文字（BOOST_HUD_TEXT 色）。
+        布局：左 "Score: X" | 中 "Lv.N  Speed Mx" | 右 "BOOST"（条件）。
 
         Args:
             score: 当前分数值
             is_boosting: 是否处于加速状态，默认 False
+            difficulty_level: 当前难度等级编号，默认 0
+            effective_multiplier: 当前综合速度倍率，默认 1.0
         """
         # HUD 背景条 (深色，半透明)
         hud_bg = pygame.Surface((WINDOW_WIDTH, HUD_HEIGHT), pygame.SRCALPHA)
@@ -185,6 +192,16 @@ class Renderer:
         text_rect = score_text.get_rect()
         text_rect.midleft = (12, HUD_HEIGHT // 2)
         self.screen.blit(score_text, text_rect)
+
+        # 难度信息文字 (居中，垂直居中)
+        difficulty_text = self._render_text(
+            self.font_small,
+            f"Lv.{difficulty_level}  Speed {effective_multiplier:.1f}x",
+            COLORS.TEXT,
+        )
+        diff_rect = difficulty_text.get_rect()
+        diff_rect.center = (WINDOW_WIDTH // 2, HUD_HEIGHT // 2)
+        self.screen.blit(difficulty_text, diff_rect)
 
         # 加速状态指示文字 (右侧对齐，垂直居中)
         if is_boosting:
@@ -291,6 +308,8 @@ class Renderer:
         score: int,
         state: GameState,
         is_boosting: bool = False,
+        difficulty_level: int = 0,
+        effective_multiplier: float = 1.0,
     ) -> None:
         """按图层顺序合成并绘制完整帧。
 
@@ -298,7 +317,7 @@ class Renderer:
         1. draw_background   — 背景色 + 网格线
         2. draw_snake        — 蛇身（尾到头） + 蛇头
         3. draw_food         — 食物（跳过占位）
-        4. draw_hud          — 顶部分数显示 + 条件 BOOST 文字
+        4. draw_hud          — 顶部 HUD（分数 + 难度 + BOOST）
         5. 条件遮罩          — 根据 GameState 叠加 game_over / victory
 
         Args:
@@ -307,11 +326,13 @@ class Renderer:
             score: 当前分数
             state: 游戏状态枚举 (RUNNING / GAME_OVER / VICTORY)
             is_boosting: 是否处于加速状态，默认 False
+            difficulty_level: 当前难度等级编号，默认 0
+            effective_multiplier: 当前综合速度倍率，默认 1.0
         """
         self.draw_background()
         self.draw_snake(snake, is_boosting)
         self.draw_food(food)
-        self.draw_hud(score, is_boosting)
+        self.draw_hud(score, is_boosting, difficulty_level, effective_multiplier)
 
         if state == GameState.GAME_OVER:
             self.draw_game_over(score)

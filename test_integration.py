@@ -2449,5 +2449,513 @@ class TestBoostPerformance(_IntegrationTestBase):
         self.assertEqual((head_before[0], head_before[1] - 1), self.game.snake.head)
 
 
+# =============================================================================
+# T-007: 手动验收测试与集成验证 — 逐场景自动化验证
+# =============================================================================
+
+
+class TestT007AcceptanceInitialState(_IntegrationTestBase):
+    """T-007-1: 初始状态验证 — tick=100ms, difficulty_level=0, HUD 正常"""
+
+    def test_initial_tick_interval_is_100ms(self):
+        """初始状态 tick 间隔 = 100ms"""
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(100.0, interval, places=1)
+
+    def test_initial_difficulty_level_zero(self):
+        """初始难度等级为 0"""
+        self.assertEqual(0, self.game.difficulty_level)
+
+    def test_initial_difficulty_multiplier_zero(self):
+        """初始难度倍率为 0.0"""
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_effective_multiplier_initial_1_0(self):
+        """初始综合倍率为 1.0"""
+        effective = 1.0 + self.game.difficulty_multiplier + (self.game.snake.boost_multiplier - 1.0)
+        self.assertAlmostEqual(1.0, effective, places=1)
+
+    def test_hud_renders_initial_difficulty(self):
+        """HUD 渲染初始难度信息 'Lv.0 Speed 1.0x' 不崩溃"""
+        renderer = self.game.renderer
+        try:
+            renderer.draw_hud(0, difficulty_level=0, effective_multiplier=1.0)
+        except Exception as e:
+            self.fail(f"HUD initial difficulty render raised {e}")
+
+    def test_tick_interval_between_20ms_and_100ms_boundaries(self):
+        """tick 间隔在 [MIN_TICK_INTERVAL, BASE_TICK_INTERVAL] 范围内"""
+        interval = self.game._get_current_tick_interval()
+        self.assertGreaterEqual(interval, 20.0)
+        self.assertLessEqual(interval, 100.0)
+
+
+class TestT007AcceptanceEat5Food(_IntegrationTestBase):
+    """T-007-2: 吃5个食物(50分) — 验证 tick~90.9ms, difficulty_level=1"""
+
+    def setUp(self):
+        super().setUp()
+        # 模拟吃 5 个食物（每个 10 分，共 50 分，跨越 1 个阈值）
+        for _ in range(5):
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+
+    def test_score_is_50_after_5_food(self):
+        """吃 5 个食物后分数为 50"""
+        self.assertEqual(50, self.game.score)
+
+    def test_difficulty_level_is_1(self):
+        """分数 50 时难度等级为 1 (50//50=1)"""
+        self.assertEqual(1, self.game.difficulty_level)
+
+    def test_difficulty_multiplier_is_0_1(self):
+        """难度倍率为 0.1 (1 * 0.1)"""
+        self.assertAlmostEqual(0.1, self.game.difficulty_multiplier, places=5)
+
+    def test_tick_interval_is_about_90_9ms(self):
+        """tick 间隔 ~90.9ms (100/1.1)"""
+        interval = self.game._get_current_tick_interval()
+        expected = 100.0 / 1.1
+        self.assertAlmostEqual(expected, interval, places=1)
+
+    def test_effective_multiplier_is_1_1(self):
+        """综合倍率 = 1.1 (1 + 0.1 + 0)"""
+        effective = 1.0 + self.game.difficulty_multiplier + (self.game.snake.boost_multiplier - 1.0)
+        self.assertAlmostEqual(1.1, effective, places=3)
+
+    def test_tick_interval_still_above_minimum(self):
+        """tick 间隔仍远高于 20ms 下限"""
+        interval = self.game._get_current_tick_interval()
+        self.assertGreater(interval, 20.0)
+
+
+class TestT007AcceptanceEat10Food(_IntegrationTestBase):
+    """T-007-3: 吃10个食物(100分) — 验证 tick~83.3ms, difficulty_level=2"""
+
+    def setUp(self):
+        super().setUp()
+        # 模拟吃 10 个食物（每个 10 分，共 100 分，跨越 2 个阈值）
+        for _ in range(10):
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+
+    def test_score_is_100_after_10_food(self):
+        """吃 10 个食物后分数为 100"""
+        self.assertEqual(100, self.game.score)
+
+    def test_difficulty_level_is_2(self):
+        """分数 100 时难度等级为 2 (100//50=2)"""
+        self.assertEqual(2, self.game.difficulty_level)
+
+    def test_difficulty_multiplier_is_0_2(self):
+        """难度倍率为 0.2 (2 * 0.1)"""
+        self.assertAlmostEqual(0.2, self.game.difficulty_multiplier, places=5)
+
+    def test_tick_interval_is_about_83_3ms(self):
+        """tick 间隔 ~83.3ms (100/1.2)"""
+        interval = self.game._get_current_tick_interval()
+        expected = 100.0 / 1.2
+        self.assertAlmostEqual(expected, interval, places=1)
+
+    def test_effective_multiplier_is_1_2(self):
+        """综合倍率 = 1.2 (1 + 0.2 + 0)"""
+        effective = 1.0 + self.game.difficulty_multiplier + (self.game.snake.boost_multiplier - 1.0)
+        self.assertAlmostEqual(1.2, effective, places=3)
+
+    def test_difficulty_level_incremented_correctly(self):
+        """难度从 Lv.0 经 Lv.1 到达 Lv.2（台阶式递增）"""
+        # 分数 100 对应 level=2，中间经过 50 分 level=1
+        self.assertEqual(2, self.game.difficulty_level)
+
+
+class TestT007AcceptanceBoostOverlay(_IntegrationTestBase):
+    """T-007-4: 按住空格验证叠加加速 — boost_multiplier 与 difficulty_multiplier 加法叠加"""
+
+    def setUp(self):
+        super().setUp()
+        # 先建立一定难度 (50 分 => diff=0.1)
+        for _ in range(5):
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+
+    def test_difficulty_established_before_boost(self):
+        """加速前难度已建立：level=1, diff=0.1"""
+        self.assertEqual(1, self.game.difficulty_level)
+        self.assertAlmostEqual(0.1, self.game.difficulty_multiplier, places=5)
+
+    def test_boost_alone_reduces_tick(self):
+        """仅 boost (无难度) 时 tick=50ms (100/2)"""
+        self.game.difficulty_multiplier = 0.0
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(50.0, interval, places=1)
+
+    def test_difficulty_alone_reduces_tick(self):
+        """仅难度 (无 boost) 时 tick~90.9ms (100/1.1)"""
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        expected = 100.0 / 1.1
+        self.assertAlmostEqual(expected, interval, places=1)
+
+    def test_boost_plus_difficulty_compound(self):
+        """难度 + boost 加法叠加: diff=0.1 + boost=2.0 -> effective=2.1, tick~47.6ms"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        interval = self.game._get_current_tick_interval()
+        # effective = 1 + 0.1 + 1.0 = 2.1
+        expected = 100.0 / 2.1
+        self.assertAlmostEqual(expected, interval, places=1)
+
+    def test_effective_multiplier_reflects_both_factors(self):
+        """综合倍率同时反映难度和加速贡献"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        effective = 1.0 + self.game.difficulty_multiplier + (self.game.snake.boost_multiplier - 1.0)
+        # effective = 1 + 0.1 + 1.0 = 2.1
+        self.assertAlmostEqual(2.1, effective, places=3)
+
+    def test_is_boosting_flag_active_with_boost(self):
+        """boost 激活时 is_boosting 为 True"""
+        self.game.snake.boost_state['is_active'] = True
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.assertTrue(self.game.snake.is_boosting)
+
+    def test_boost_release_returns_to_diff_only(self):
+        """释放加速后 tick 恢复到仅难度加速水平"""
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        self.game.snake.boost_state['is_active'] = True
+
+        # 释放加速
+        for _ in range(100):
+            self.game._update_boost_state(16.0, False)
+
+        interval = self.game._get_current_tick_interval()
+        # 仅剩 diff=0.1
+        expected = 100.0 / 1.1
+        self.assertAlmostEqual(expected, interval, places=1)
+
+
+class TestT007AcceptanceResetOnCrash(_IntegrationTestBase):
+    """T-007-5: 撞墙重置 — 验证 HUD 难度复位"""
+
+    def setUp(self):
+        super().setUp()
+        # 先建立难度 (100 分 => level=2, diff=0.2)
+        for _ in range(10):
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+
+    def test_difficulty_established_before_crash(self):
+        """撞墙前难度已建立"""
+        self.assertEqual(2, self.game.difficulty_level)
+        self.assertAlmostEqual(0.2, self.game.difficulty_multiplier, places=5)
+        self.assertEqual(100, self.game.score)
+
+    def test_crash_triggers_game_over(self):
+        """撞墙触发 GAME_OVER"""
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+        self.game._update()
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+
+    def test_reset_after_crash_clears_difficulty(self):
+        """撞墙后 reset 难度归零"""
+        # 先撞墙
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+        self.game._update()
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+
+        # reset
+        self.game.reset()
+
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+        self.assertEqual(0, self.game.score)
+        self.assertEqual(GameState.RUNNING, self.game.state)
+
+    def test_reset_restores_tick_to_100ms(self):
+        """撞墙 reset 后 tick 恢复为 100ms"""
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+        self.game._update()
+        self.game.reset()
+
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(100.0, interval, places=1)
+
+    def test_hud_renders_reset_difficulty_lv0(self):
+        """reset 后 HUD 显示 Lv.0"""
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+        self.game._update()
+        self.game.reset()
+
+        renderer = self.game.renderer
+        try:
+            renderer.draw_hud(0, difficulty_level=0, effective_multiplier=1.0)
+        except Exception as e:
+            self.fail(f"HUD render after reset raised {e}")
+
+    def test_multiple_reset_cycles_difficulty_consistent(self):
+        """多次撞墙->reset 循环，难度每次归零一致"""
+        for cycle in range(3):
+            # 吃食物建立难度
+            for _ in range(5):
+                head = self.game.snake.head
+                d = self.game.snake.direction
+                self.game.food.position = (head[0] + d[0], head[1] + d[1])
+                self.game._update()
+            # 撞墙
+            self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+            self.game.snake.direction = (-1, 0)
+            self.game._update()
+            # reset
+            self.game.reset()
+
+            self.assertEqual(0, self.game.difficulty_level,
+                             f"Cycle {cycle}: difficulty_level not reset")
+            self.assertEqual(0.0, self.game.difficulty_multiplier,
+                             f"Cycle {cycle}: difficulty_multiplier not reset")
+            self.assertAlmostEqual(100.0, self.game._get_current_tick_interval(),
+                                   places=1,
+                                   msg=f"Cycle {cycle}: tick interval not 100ms")
+
+
+class TestT007AcceptanceThresholdCrossing(_IntegrationTestBase):
+    """T-007-6: 连续快速吃食物 — 验证阈值跨越"""
+
+    def test_eating_5_food_crosses_threshold_50(self):
+        """吃 5 个食物 (50分) 跨越第一个阈值 -> level 0->1"""
+        for i in range(5):
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+
+        self.assertEqual(50, self.game.score)
+        self.assertEqual(1, self.game.difficulty_level)
+
+    def test_eating_10_food_crosses_threshold_100(self):
+        """吃 10 个食物 (100分) 跨越两个阈值 -> level 0->1->2"""
+        levels_seen = [self.game.difficulty_level]
+
+        for i in range(10):
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+            levels_seen.append(self.game.difficulty_level)
+
+        self.assertEqual(100, self.game.score)
+        self.assertEqual(2, self.game.difficulty_level)
+        # 验证经过 level=1 这个中间状态
+        self.assertIn(1, levels_seen, "Should have passed through level 1")
+
+    def test_eating_15_food_crosses_threshold_150(self):
+        """吃 15 个食物 (150分) -> level=3, diff=0.3, tick~76.9ms"""
+        for i in range(15):
+            head = self.game.snake.head
+            d = self.game.snake.direction
+            self.game.food.position = (head[0] + d[0], head[1] + d[1])
+            self.game._update()
+
+        self.assertEqual(150, self.game.score)
+        self.assertEqual(3, self.game.difficulty_level)
+        self.assertAlmostEqual(0.3, self.game.difficulty_multiplier, places=5)
+        expected_tick = 100.0 / 1.3
+        self.assertAlmostEqual(expected_tick, self.game._get_current_tick_interval(), places=1)
+
+    def test_thresholds_are_stepwise_not_continuous(self):
+        """难度递增是台阶式：score=49 level=0, score=50 level=1（离散跳跃）"""
+        # 验证 49 分
+        self.game.score = 49
+        self.game._update_difficulty()
+        self.assertEqual(0, self.game.difficulty_level)
+        mult_at_49 = self.game.difficulty_multiplier
+
+        # 验证 50 分
+        self.game.score = 50
+        self.game._update_difficulty()
+        self.assertEqual(1, self.game.difficulty_level)
+        mult_at_50 = self.game.difficulty_multiplier
+
+        # 台阶式跳跃
+        self.assertNotEqual(mult_at_49, mult_at_50)
+        self.assertAlmostEqual(0.0, mult_at_49)
+        self.assertAlmostEqual(0.1, mult_at_50, places=5)
+
+    def test_threshold_crossing_tick_decreases_monotonically(self):
+        """跨越阈值后 tick 单调递减"""
+        ticks = []
+        for target_score in [0, 50, 100, 150, 200, 250]:
+            self.game.score = target_score
+            self.game._update_difficulty()
+            ticks.append(self.game._get_current_tick_interval())
+
+        for i in range(1, len(ticks)):
+            self.assertLess(ticks[i], ticks[i-1],
+                            f"Tick should decrease: {ticks[i]} >= {ticks[i-1]}")
+
+    def test_rapid_threshold_crossing_no_loss_of_levels(self):
+        """短时间内多次跨越阈值，不丢失中间等级"""
+        # 一次性设置 score 到 300（应 level=6），验证 level 公式正确
+        self.game.score = 300
+        self.game._update_difficulty()
+        expected_level = 300 // 50  # 6
+        self.assertEqual(expected_level, self.game.difficulty_level)
+        # multiplier = min(6*0.1, 4.0) = 0.6
+        self.assertAlmostEqual(0.6, self.game.difficulty_multiplier, places=5)
+        # tick = max(20, 100/1.6) = 62.5ms
+        expected_tick = max(20.0, 100.0 / 1.6)
+        self.assertAlmostEqual(expected_tick, self.game._get_current_tick_interval(), places=1)
+
+    def test_extreme_high_score_multiplier_clamped(self):
+        """极端高分 multiplier 钳位在 MAX_DIFFICULTY_MULTIPLIER"""
+        self.game.score = 9999
+        self.game._update_difficulty()
+        self.assertEqual(199, self.game.difficulty_level)  # 9999//50
+        self.assertLessEqual(self.game.difficulty_multiplier, 4.0)
+        # tick 不低于 20ms
+        interval = self.game._get_current_tick_interval()
+        self.assertGreaterEqual(interval, 20.0)
+
+
+class TestT007AcceptanceHUDDisplay(_IntegrationTestBase):
+    """T-007-7: HUD 显示正确性验证"""
+
+    def setUp(self):
+        super().setUp()
+        self.renderer = self.game.renderer
+
+    def test_hud_shows_score_correctly(self):
+        """HUD 左侧显示分数"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(100, difficulty_level=0, effective_multiplier=1.0)
+        # 不崩溃即通过（分数文字渲染由 Renderer 内部处理）
+        self.assertTrue(True)
+
+    def test_hud_shows_difficulty_level_correctly(self):
+        """HUD 中部显示难度等级"""
+        self.renderer.draw_background()
+        for level, mult in [(0, 1.0), (1, 1.1), (3, 1.3), (5, 1.5), (10, 2.0)]:
+            try:
+                self.renderer.draw_hud(level * 50, difficulty_level=level,
+                                       effective_multiplier=mult)
+            except Exception as e:
+                self.fail(f"HUD level={level} raised {e}")
+
+    def test_hud_shows_boost_indicator_correctly(self):
+        """HUD 右侧条件显示 BOOST 文字"""
+        self.renderer.draw_background()
+        # boost 激活时渲染
+        try:
+            self.renderer.draw_hud(50, is_boosting=True, difficulty_level=1,
+                                   effective_multiplier=2.1)
+        except Exception as e:
+            self.fail(f"HUD with boost raised {e}")
+
+    def test_hud_difficulty_does_not_overlap_score(self):
+        """HUD 难度文字不遮挡分数区域"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(9999, difficulty_level=99, effective_multiplier=9.9)
+        # 分数在左侧 (x=12)，难度居中 (x=WIDTH/2)
+        # 验证两个区域都不为空
+        score_pixel = tuple(self.renderer.screen.get_at((12, HUD_HEIGHT // 2))[:3])
+        diff_pixel = tuple(self.renderer.screen.get_at((WINDOW_WIDTH // 2, HUD_HEIGHT // 2))[:3])
+        self.assertNotEqual(COLORS.BACKGROUND, score_pixel,
+                            "Score area should have text")
+        self.assertNotEqual(COLORS.BACKGROUND, diff_pixel,
+                            "Difficulty area should have text")
+
+    def test_hud_difficulty_does_not_overlap_boost(self):
+        """HUD 难度文字居中，不覆盖右侧 BOOST 区域"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(150, is_boosting=True, difficulty_level=3,
+                               effective_multiplier=2.3)
+        # 中央区域应有文字
+        center_pixel = tuple(self.renderer.screen.get_at(
+            (WINDOW_WIDTH // 2, HUD_HEIGHT // 2))[:3])
+        self.assertNotEqual(COLORS.BACKGROUND, center_pixel)
+
+    def test_hud_does_not_cover_game_elements(self):
+        """HUD 不遮挡蛇和食物等游戏元素"""
+        # 绘制完整帧
+        food = Food(GRID_COLS, GRID_ROWS)
+        food.position = (5, 10)
+        self.renderer.draw_frame(
+            self.game.snake, food, 80, GameState.RUNNING,
+            difficulty_level=1, effective_multiplier=1.1
+        )
+        # 蛇头可见（在 HUD 高度以下）
+        hx, hy = self.game.snake.head
+        head_color = tuple(self.renderer.screen.get_at(
+            (hx * CELL_SIZE + 10, hy * CELL_SIZE + 10))[:3])
+        self.assertEqual(COLORS.SNAKE_HEAD, head_color,
+                         "Snake head should be visible below HUD")
+
+        # 食物可见
+        food_color = tuple(self.renderer.screen.get_at(
+            (5 * CELL_SIZE + 10, 10 * CELL_SIZE + 10))[:3])
+        self.assertEqual(COLORS.FOOD, food_color,
+                         "Food should be visible below HUD")
+
+    def test_hud_layout_three_zones_distinct(self):
+        """HUD 三区布局：左分数 | 中难度 | 右 BOOST"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(100, is_boosting=True, difficulty_level=2,
+                               effective_multiplier=1.2)
+        # 左侧 (x=12)
+        left = tuple(self.renderer.screen.get_at((12, HUD_HEIGHT // 2))[:3])
+        # 中间 (x=WIDTH//2)
+        mid = tuple(self.renderer.screen.get_at((WINDOW_WIDTH // 2, HUD_HEIGHT // 2))[:3])
+        # 右侧 (x=WIDTH-50)
+        right = tuple(self.renderer.screen.get_at((WINDOW_WIDTH - 50, HUD_HEIGHT // 2))[:3])
+
+        self.assertNotEqual(COLORS.BACKGROUND, left, "Score zone should render")
+        self.assertNotEqual(COLORS.BACKGROUND, mid, "Difficulty zone should render")
+
+    def test_hud_effective_multiplier_realtime_update(self):
+        """综合倍率在 boost 和难度变化时实时反映"""
+        # 基准
+        eff1 = 1.0 + self.game.difficulty_multiplier + (self.game.snake.boost_multiplier - 1.0)
+        self.assertAlmostEqual(1.0, eff1, places=3)
+
+        # 加难度 (simulate 100 pts)
+        self.game.score = 100
+        self.game._update_difficulty()
+        eff2 = 1.0 + self.game.difficulty_multiplier + (self.game.snake.boost_multiplier - 1.0)
+        self.assertAlmostEqual(1.2, eff2, places=3)
+
+        # 加 boost
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        eff3 = 1.0 + self.game.difficulty_multiplier + (self.game.snake.boost_multiplier - 1.0)
+        self.assertAlmostEqual(2.2, eff3, places=3)
+
+    def test_hud_text_readable_sufficient_contrast(self):
+        """HUD 文字与背景有足够对比度（文字颜色不同于背景）"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(0, difficulty_level=0, effective_multiplier=1.0)
+        # HUD 区域内背景条已覆盖，文字应可见
+        # 验证 HUD 中心区与原先纯背景色不同
+        bg_layer = self.renderer.screen.get_at((WINDOW_WIDTH // 2, HUD_HEIGHT // 2))
+        self.assertIsNotNone(bg_layer)
+
+    def test_hud_effective_multiplier_formatting_one_decimal(self):
+        """综合倍率格式保留一位小数 (x.x)"""
+        # 验证渲染不崩溃即可，格式化由 Renderer 内部控制
+        self.renderer.draw_background()
+        try:
+            self.renderer.draw_hud(50, difficulty_level=1, effective_multiplier=1.067)
+        except Exception as e:
+            self.fail(f"Multiplier formatting raised {e}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,8 @@ from config import (
     GRID_COLS, GRID_ROWS,
     SCORE_PER_FOOD,
     BASE_TICK_INTERVAL, BOOST_SPEED_MULTIPLIER, BOOST_TRANSITION_SECONDS,
-    MAX_BOOST_MULTIPLIER, MAX_CATCHUP_STEPS,
+    DIFFICULTY_INCREMENT, MAX_BOOST_MULTIPLIER, MAX_CATCHUP_STEPS,
+    MAX_DIFFICULTY_MULTIPLIER, SCORE_THRESHOLD_INTERVAL,
 )
 from game import Game, GameState
 from snake import Snake
@@ -523,6 +524,62 @@ class TestReset(_GameTestBase):
         self.assertEqual(first_score, self.game.score)
         self.assertEqual(first_state, self.game.state)
 
+    def test_reset_clears_difficulty_level(self):
+        """reset() 后 difficulty_level 归零"""
+        self.game.difficulty_level = 5
+        self.game.difficulty_multiplier = 1.5
+        self.game.reset()
+        self.assertEqual(0, self.game.difficulty_level)
+
+    def test_reset_clears_difficulty_multiplier(self):
+        """reset() 后 difficulty_multiplier 归零"""
+        self.game.difficulty_level = 5
+        self.game.difficulty_multiplier = 1.5
+        self.game.reset()
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_reset_difficulty_from_game_over(self):
+        """从 GAME_OVER 状态 reset 后难度归零"""
+        self.game.state = GameState.GAME_OVER
+        self.game.difficulty_level = 3
+        self.game.difficulty_multiplier = 0.3
+        self.game.reset()
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_reset_difficulty_from_victory(self):
+        """从 VICTORY 状态 reset 后难度归零"""
+        self.game.state = GameState.VICTORY
+        self.game.difficulty_level = 10
+        self.game.difficulty_multiplier = 1.0
+        self.game.reset()
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_reset_difficulty_from_running(self):
+        """从 RUNNING 状态 reset 后难度归零"""
+        self.game.difficulty_level = 2
+        self.game.difficulty_multiplier = 0.2
+        self.game.score = 100
+        self.game.reset()
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_multiple_resets_difficulty_consistent(self):
+        """多次 reset 难度状态一致"""
+        self.game.difficulty_level = 5
+        self.game.difficulty_multiplier = 2.0
+        self.game.reset()
+        first_level = self.game.difficulty_level
+        first_mult = self.game.difficulty_multiplier
+
+        self.game.difficulty_level = 8
+        self.game.difficulty_multiplier = 3.0
+        self.game.reset()
+
+        self.assertEqual(first_level, self.game.difficulty_level)
+        self.assertEqual(first_mult, self.game.difficulty_multiplier)
+
 
 # =============================================================================
 # 测试类：Game.run 集成测试
@@ -893,6 +950,100 @@ class TestGetCurrentTickInterval(_GameTestBase):
         self.game.snake.boost_state['current_multiplier'] = 1.0
         interval = self.game._get_current_tick_interval()
         self.assertEqual(float(BASE_TICK_INTERVAL), interval)
+
+
+# =============================================================================
+# 测试类：_get_current_tick_interval 复合公式测试（难度+加速叠加）
+# =============================================================================
+
+class TestGetCurrentTickIntervalCompound(_GameTestBase):
+    """测试 _get_current_tick_interval 在难度+加速复合叠加下的 tick 计算"""
+
+    def test_diff0_boost1_tick_100ms(self):
+        """diff=0, boost=1.0 时 tick=100ms（向后兼容）"""
+        self.game.difficulty_multiplier = 0.0
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(100.0, interval, places=1)
+
+    def test_diff05_boost1_tick_66_7ms(self):
+        """diff=0.5, boost=1.0 时 tick=66.7ms"""
+        self.game.difficulty_multiplier = 0.5
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(100.0 / 1.5, interval, places=1)
+
+    def test_diff0_boost2_tick_50ms(self):
+        """diff=0, boost=2.0 时 tick=50ms"""
+        self.game.difficulty_multiplier = 0.0
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(50.0, interval, places=1)
+
+    def test_diff4_boost5_tick_clamped_to_20ms(self):
+        """diff=4.0, boost=5.0 时 tick 不低于 20ms 硬下限"""
+        self.game.difficulty_multiplier = 4.0
+        self.game.snake.boost_state['current_multiplier'] = 5.0
+        interval = self.game._get_current_tick_interval()
+        self.assertGreaterEqual(interval, 20.0)
+        # effective = 1 + 4 + 4 = 9, 100/9 ≈ 11.1, clamped to 20
+        self.assertAlmostEqual(20.0, interval, places=1)
+
+    def test_diff2_boost3_tick_correct(self):
+        """diff=2.0, boost=3.0 -> effective=6.0, tick=100/6≈16.7 clamped to 20"""
+        self.game.difficulty_multiplier = 2.0
+        self.game.snake.boost_state['current_multiplier'] = 3.0
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(20.0, interval, places=1)
+
+    def test_compound_always_positive(self):
+        """复合叠加下 interval 始终为正"""
+        self.game.difficulty_multiplier = 0.0
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertGreater(interval, 0)
+
+    def test_compound_returns_float(self):
+        """复合叠加下返回值仍为 float"""
+        self.game.difficulty_multiplier = 1.0
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        interval = self.game._get_current_tick_interval()
+        self.assertIsInstance(interval, float)
+
+    def test_diff_and_boost_both_zero_effective(self):
+        """diff=0, boost=1.0 -> boost_extra=0 -> effective=1.0 -> 100ms"""
+        self.game.difficulty_multiplier = 0.0
+        self.game.snake.boost_state['current_multiplier'] = 1.0
+        interval = self.game._get_current_tick_interval()
+        self.assertEqual(float(BASE_TICK_INTERVAL), interval)
+
+    def test_diff_only_no_boost(self):
+        """仅难度激活无加速时 tick 正确递减"""
+        self.game.difficulty_multiplier = 1.0  # diff=1.0 level
+        self.game.snake.boost_state['current_multiplier'] = 1.0  # no boost
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(100.0 / 2.0, interval, places=1)  # 50ms
+
+    def test_boost_only_no_diff(self):
+        """仅加速无难度时 tick 正确递减（与改动前一致）"""
+        self.game.difficulty_multiplier = 0.0
+        self.game.snake.boost_state['current_multiplier'] = 2.0  # boost
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(50.0, interval, places=1)
+
+    def test_diff05_boost2_tick_40ms(self):
+        """diff=0.5, boost=2.0 -> effective=2.5, tick=40ms"""
+        self.game.difficulty_multiplier = 0.5
+        self.game.snake.boost_state['current_multiplier'] = 2.0
+        interval = self.game._get_current_tick_interval()
+        self.assertAlmostEqual(40.0, interval, places=1)
+
+    def test_both_maxed_clamped(self):
+        """两者都达到上限时 tick 不低于 MIN_TICK_INTERVAL"""
+        self.game.difficulty_multiplier = MAX_DIFFICULTY_MULTIPLIER
+        self.game.snake.boost_state['current_multiplier'] = MAX_BOOST_MULTIPLIER
+        interval = self.game._get_current_tick_interval()
+        self.assertGreaterEqual(interval, 20.0)
 
 
 # =============================================================================
@@ -1303,6 +1454,237 @@ class TestMultiFrameAccumulator(_GameTestBase):
             update_count += 1
         self.assertEqual(2, update_count)
         self.assertAlmostEqual(50.0, accumulator)
+
+
+# =============================================================================
+# 测试类：_update_difficulty 难度递增
+# =============================================================================
+
+
+class TestDifficultyInit(_GameTestBase):
+    """测试难度状态初始化"""
+
+    def test_difficulty_level_initial_zero(self):
+        """difficulty_level 初始值为 0"""
+        self.assertEqual(0, self.game.difficulty_level)
+
+    def test_difficulty_multiplier_initial_zero(self):
+        """difficulty_multiplier 初始值为 0.0"""
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_difficulty_level_is_int(self):
+        """difficulty_level 类型为 int"""
+        self.assertIsInstance(self.game.difficulty_level, int)
+
+    def test_difficulty_multiplier_is_float(self):
+        """difficulty_multiplier 类型为 float"""
+        self.assertIsInstance(self.game.difficulty_multiplier, float)
+
+
+class TestUpdateDifficulty(_GameTestBase):
+    """测试 _update_difficulty() 方法逻辑"""
+
+    def test_score_zero_keeps_level_zero(self):
+        """score=0 时 _update_difficulty() 保持 level=0, multiplier=0.0"""
+        self.game.score = 0
+        self.game._update_difficulty()
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_score_50_level_1_multiplier_0_1(self):
+        """score=50 时 level=1, multiplier=0.1"""
+        self.game.score = 50
+        self.game._update_difficulty()
+        self.assertEqual(1, self.game.difficulty_level)
+        self.assertAlmostEqual(0.1, self.game.difficulty_multiplier, places=5)
+
+    def test_score_100_level_2_multiplier_0_2(self):
+        """score=100 时 level=2, multiplier=0.2"""
+        self.game.score = 100
+        self.game._update_difficulty()
+        self.assertEqual(2, self.game.difficulty_level)
+        self.assertAlmostEqual(0.2, self.game.difficulty_multiplier, places=5)
+
+    def test_score_49_level_0(self):
+        """score=49（阈值边界下）level=0"""
+        self.game.score = 49
+        self.game._update_difficulty()
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_score_51_level_1(self):
+        """score=51（阈值边界上）level=1"""
+        self.game.score = 51
+        self.game._update_difficulty()
+        self.assertEqual(1, self.game.difficulty_level)
+        self.assertAlmostEqual(0.1, self.game.difficulty_multiplier, places=5)
+
+    def test_score_2000_multiplier_clamped_to_max(self):
+        """score=2000 时 multiplier 钳位在 MAX_DIFFICULTY_MULTIPLIER (4.0)"""
+        self.game.score = 2000
+        self.game._update_difficulty()
+        expected_level = 2000 // SCORE_THRESHOLD_INTERVAL  # 40
+        self.assertEqual(expected_level, self.game.difficulty_level)
+        # multiplier 应钳位在 MAX_DIFFICULTY_MULTIPLIER
+        self.assertEqual(MAX_DIFFICULTY_MULTIPLIER, self.game.difficulty_multiplier)
+
+    def test_score_10000_multiplier_still_clamped(self):
+        """极端高分 score=10000 时 multiplier 仍钳位在上限"""
+        self.game.score = 10000
+        self.game._update_difficulty()
+        self.assertEqual(MAX_DIFFICULTY_MULTIPLIER, self.game.difficulty_multiplier)
+
+    def test_update_difficulty_idempotent(self):
+        """相同 score 反复调用 _update_difficulty() 结果不变（幂等）"""
+        self.game.score = 150
+        self.game._update_difficulty()
+        level1 = self.game.difficulty_level
+        mult1 = self.game.difficulty_multiplier
+
+        # 反复调用多次
+        for _ in range(10):
+            self.game._update_difficulty()
+
+        self.assertEqual(level1, self.game.difficulty_level)
+        self.assertEqual(mult1, self.game.difficulty_multiplier)
+
+    def test_score_zero_idempotent(self):
+        """score=0 时反复调用结果不变"""
+        self.game.score = 0
+        self.game._update_difficulty()
+
+        for _ in range(5):
+            self.game._update_difficulty()
+
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_difficulty_level_formula(self):
+        """验证 level = score // SCORE_THRESHOLD_INTERVAL 公式"""
+        self.game.score = 135
+        self.game._update_difficulty()
+        expected_level = 135 // SCORE_THRESHOLD_INTERVAL  # 2
+        expected_mult = min(
+            expected_level * DIFFICULTY_INCREMENT,
+            MAX_DIFFICULTY_MULTIPLIER,
+        )
+        self.assertEqual(expected_level, self.game.difficulty_level)
+        self.assertAlmostEqual(expected_mult, self.game.difficulty_multiplier, places=5)
+
+    def test_multiplier_formula_level_times_increment(self):
+        """验证 multiplier = min(level * increment, max) 公式"""
+        # score=500 -> level=10, 10*0.1=1.0, min(1.0, 4.0)=1.0
+        self.game.score = 500
+        self.game._update_difficulty()
+        self.assertEqual(10, self.game.difficulty_level)  # 500 // 50
+        expected = min(10 * DIFFICULTY_INCREMENT, MAX_DIFFICULTY_MULTIPLIER)
+        self.assertAlmostEqual(expected, self.game.difficulty_multiplier, places=5)
+
+
+class TestDifficultyReset(_GameTestBase):
+    """测试难度状态在 reset 时归零"""
+
+    def test_reset_clears_difficulty_level(self):
+        """reset() 后 difficulty_level 归零"""
+        self.game.difficulty_level = 5
+        self.game.difficulty_multiplier = 1.5
+        self.game.reset()
+        self.assertEqual(0, self.game.difficulty_level)
+
+    def test_reset_clears_difficulty_multiplier(self):
+        """reset() 后 difficulty_multiplier 归零"""
+        self.game.difficulty_level = 5
+        self.game.difficulty_multiplier = 1.5
+        self.game.reset()
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_reset_from_game_over_clears_difficulty(self):
+        """从 GAME_OVER 状态 reset 后难度归零"""
+        self.game.state = GameState.GAME_OVER
+        self.game.difficulty_level = 3
+        self.game.difficulty_multiplier = 0.3
+        self.game.reset()
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_reset_from_victory_clears_difficulty(self):
+        """从 VICTORY 状态 reset 后难度归零"""
+        self.game.state = GameState.VICTORY
+        self.game.difficulty_level = 10
+        self.game.difficulty_multiplier = 1.0
+        self.game.reset()
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
+
+    def test_multiple_resets_difficulty_consistent(self):
+        """多次 reset 难度状态一致"""
+        self.game.difficulty_level = 5
+        self.game.difficulty_multiplier = 2.0
+        self.game.reset()
+        first_level = self.game.difficulty_level
+        first_mult = self.game.difficulty_multiplier
+
+        self.game.difficulty_level = 8
+        self.game.difficulty_multiplier = 3.0
+        self.game.reset()
+
+        self.assertEqual(first_level, self.game.difficulty_level)
+        self.assertEqual(first_mult, self.game.difficulty_multiplier)
+
+
+class TestDifficultyUpdateIntegration(_GameTestBase):
+    """测试 _update() 中难度更新集成"""
+
+    def test_update_calls_difficulty_when_eat_food(self):
+        """吃食物后 _update_difficulty 被调用，难度状态更新"""
+        head = self.game.snake.head
+        direction = self.game.snake.direction
+        self.game.food.position = (head[0] + direction[0],
+                                   head[1] + direction[1])
+
+        # 吃第一个食物（10分）-> level 仍为 0
+        self.game._update()
+        self.assertEqual(10, self.game.score)
+        self.assertEqual(0, self.game.difficulty_level)
+
+    def test_multiple_food_eats_increases_difficulty(self):
+        """连续吃食物跨越阈值后难度递增"""
+        # 每吃一次 +10 分，吃 5 次达到 50 分跨越阈值
+        for i in range(6):  # 0..5 -> score=60
+            head = self.game.snake.head
+            direction = self.game.snake.direction
+            self.game.food.position = (head[0] + direction[0],
+                                       head[1] + direction[1])
+            self.game._update()
+
+        self.assertEqual(60, self.game.score)
+        self.assertEqual(1, self.game.difficulty_level)  # 60//50=1
+        self.assertAlmostEqual(0.1, self.game.difficulty_multiplier, places=5)
+
+    def test_no_difficulty_change_without_food(self):
+        """未吃食物时难度不变化"""
+        original_level = self.game.difficulty_level
+        original_mult = self.game.difficulty_multiplier
+
+        # 食物远离蛇头
+        self.game.food.position = (30, 20)
+        self.game._update()
+
+        self.assertEqual(original_level, self.game.difficulty_level)
+        self.assertEqual(original_mult, self.game.difficulty_multiplier)
+
+    def test_difficulty_unchanged_on_collision(self):
+        """撞墙/自撞时难度不变"""
+        self.game.food.position = (30, 20)  # 远离蛇
+        # 制造撞墙场景
+        self.game.snake.body = [(0, 15), (1, 15), (2, 15)]
+        self.game.snake.direction = (-1, 0)
+
+        self.game._update()
+
+        self.assertEqual(GameState.GAME_OVER, self.game.state)
+        self.assertEqual(0, self.game.difficulty_level)
+        self.assertEqual(0.0, self.game.difficulty_multiplier)
 
 
 if __name__ == "__main__":

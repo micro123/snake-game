@@ -589,6 +589,194 @@ class TestDrawHUDBoost(unittest.TestCase):
                 self.fail(f"draw_hud({score}, is_boosting=True) raised {e}")
 
 
+class TestDrawHUDDifficulty(unittest.TestCase):
+    """测试 draw_hud 难度信息渲染（T-005）"""
+
+    def setUp(self):
+        self.renderer = _renderer()
+
+    def test_default_params_no_exception(self):
+        """draw_hud 不传难度参数时不抛出异常（向后兼容）"""
+        try:
+            self.renderer.draw_hud(0)
+        except Exception as e:
+            self.fail(f"draw_hud with defaults raised {e}")
+
+    def test_difficulty_level_zero_renders_lv0(self):
+        """difficulty_level=0, effective=1.0 渲染 'Lv.0 Speed 1.0x'"""
+        self.renderer.draw_background()
+        # 获取 HUD 中心区域像素（半透明条覆盖后）
+        center_pixel_before = tuple(
+            self.renderer.screen.get_at((WINDOW_WIDTH // 2, HUD_HEIGHT // 2))[:3]
+        )
+        self.renderer.draw_hud(0, difficulty_level=0, effective_multiplier=1.0)
+        center_pixel_after = tuple(
+            self.renderer.screen.get_at((WINDOW_WIDTH // 2, HUD_HEIGHT // 2))[:3]
+        )
+        # HUD 条和难度文字覆盖后像素应变化
+        self.assertNotEqual(center_pixel_before, center_pixel_after)
+
+    def test_difficulty_level_increases(self):
+        """difficulty_level 递增均能正常渲染"""
+        for level in (0, 1, 3, 5, 10, 99):
+            r = _renderer()
+            try:
+                r.draw_hud(0, difficulty_level=level, effective_multiplier=1.0)
+            except Exception as e:
+                self.fail(f"draw_hud(level={level}) raised {e}")
+
+    def test_effective_multiplier_various(self):
+        """effective_multiplier 不同值均能正常渲染"""
+        for mult in (1.0, 1.1, 1.3, 2.0, 4.0, 9.9):
+            r = _renderer()
+            try:
+                r.draw_hud(0, difficulty_level=0, effective_multiplier=mult)
+            except Exception as e:
+                self.fail(f"draw_hud(mult={mult}) raised {e}")
+
+    def test_difficulty_with_boost_combo(self):
+        """难度 + boost 同时显示不冲突"""
+        self.renderer.draw_background()
+        try:
+            self.renderer.draw_hud(
+                150, is_boosting=True, difficulty_level=3, effective_multiplier=2.3
+            )
+        except Exception as e:
+            self.fail(f"draw_hud combo raised {e}")
+
+    def test_difficulty_text_does_not_obscure_score(self):
+        """难度文字不覆盖左侧分数区域"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(
+            999, is_boosting=False, difficulty_level=5, effective_multiplier=1.5
+        )
+        # 分数区域 (x=12, y=middle) 应有文字（非背景色）
+        score_pixel = tuple(
+            self.renderer.screen.get_at((12, HUD_HEIGHT // 2))[:3]
+        )
+        self.assertNotEqual(COLORS.BACKGROUND, score_pixel)
+
+    def test_difficulty_text_does_not_overlap_boost(self):
+        """难度文字居中不覆盖右侧 BOOST 区域"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(
+            100, is_boosting=True, difficulty_level=2, effective_multiplier=2.2
+        )
+        # BOOST 文字在右侧，难度文字在中央，两者不冲突即可
+        # 检查中央区域有像素变化
+        center_pixel = tuple(
+            self.renderer.screen.get_at((WINDOW_WIDTH // 2, HUD_HEIGHT // 2))[:3]
+        )
+        self.assertNotEqual(COLORS.BACKGROUND, center_pixel)
+
+    def test_hud_does_not_affect_game_area_with_difficulty(self):
+        """带难度信息时 HUD 不影响游戏区域"""
+        self.renderer.draw_background()
+        bg_color = tuple(self.renderer.screen.get_at((200, HUD_HEIGHT + 10))[:3])
+        self.renderer.draw_hud(
+            50, difficulty_level=1, effective_multiplier=1.1
+        )
+        after_color = tuple(self.renderer.screen.get_at((200, HUD_HEIGHT + 10))[:3])
+        self.assertEqual(bg_color, after_color,
+                         "HUD should not affect pixels below HUD_HEIGHT")
+
+    def test_hud_full_width_with_difficulty(self):
+        """带难度信息时 HUD 背景条仍覆盖全宽"""
+        self.renderer.draw_background()
+        self.renderer.draw_hud(
+            10, difficulty_level=3, effective_multiplier=1.3
+        )
+        for x in (1, WINDOW_WIDTH // 2, WINDOW_WIDTH - 1):
+            color = tuple(self.renderer.screen.get_at((x, 20))[:3])
+            self.assertNotEqual(COLORS.BACKGROUND, color,
+                                f"HUD at x={x} should differ from background")
+
+
+class TestDrawFrameDifficulty(unittest.TestCase):
+    """测试 draw_frame 难度参数传递（T-005）"""
+
+    def setUp(self):
+        self.snake = Snake(40, 30)
+        self.food = Food(40, 30)
+        self.food.respawn(self.snake.body)
+
+    def test_draw_frame_default_difficulty_params(self):
+        """draw_frame 不传难度参数时使用默认值不崩溃"""
+        renderer = _renderer()
+        try:
+            renderer.draw_frame(self.snake, self.food, 0, GameState.RUNNING)
+        except Exception as e:
+            self.fail(f"draw_frame default difficulty raised {e}")
+
+    def test_draw_frame_with_difficulty_level(self):
+        """draw_frame 传递 difficulty_level 正常工作"""
+        renderer = _renderer()
+        try:
+            renderer.draw_frame(
+                self.snake, self.food, 50, GameState.RUNNING,
+                difficulty_level=1, effective_multiplier=1.1
+            )
+        except Exception as e:
+            self.fail(f"draw_frame with difficulty raised {e}")
+
+    def test_draw_frame_with_difficulty_and_boost(self):
+        """draw_frame 同时传递难度和 boost 参数正常工作"""
+        renderer = _renderer()
+        try:
+            renderer.draw_frame(
+                self.snake, self.food, 200, GameState.RUNNING,
+                is_boosting=True, difficulty_level=4, effective_multiplier=2.4
+            )
+        except Exception as e:
+            self.fail(f"draw_frame difficulty+boost raised {e}")
+
+    def test_draw_frame_difficulty_with_game_over(self):
+        """GAME_OVER 状态传递难度参数不崩溃"""
+        renderer = _renderer()
+        try:
+            renderer.draw_frame(
+                self.snake, self.food, 100, GameState.GAME_OVER,
+                difficulty_level=2, effective_multiplier=1.2
+            )
+        except Exception as e:
+            self.fail(f"draw_frame GAME_OVER + difficulty raised {e}")
+
+    def test_draw_frame_difficulty_with_victory(self):
+        """VICTORY 状态传递难度参数不崩溃"""
+        renderer = _renderer()
+        try:
+            renderer.draw_frame(
+                self.snake, self.food, 1200, GameState.VICTORY,
+                difficulty_level=24, effective_multiplier=3.4
+            )
+        except Exception as e:
+            self.fail(f"draw_frame VICTORY + difficulty raised {e}")
+
+    def test_draw_frame_difficulty_all_elements_visible(self):
+        """带难度参数时所有游戏元素正常绘制"""
+        renderer = _renderer()
+        food = Food(40, 30)
+        food.position = (5, 10)
+
+        renderer.draw_frame(
+            self.snake, food, 80, GameState.RUNNING,
+            difficulty_level=1, effective_multiplier=1.1
+        )
+
+        # 蛇头可见
+        hx, hy = self.snake.head
+        head_color = tuple(renderer.screen.get_at((hx * CELL_SIZE + 10, hy * CELL_SIZE + 10))[:3])
+        self.assertEqual(COLORS.SNAKE_HEAD, head_color)
+
+        # 食物可见
+        food_color = tuple(renderer.screen.get_at((5 * CELL_SIZE + 10, 10 * CELL_SIZE + 10))[:3])
+        self.assertEqual(COLORS.FOOD, food_color)
+
+        # HUD 中央区域被覆盖（难度文字渲染）
+        hud_center = tuple(renderer.screen.get_at((WINDOW_WIDTH // 2, HUD_HEIGHT // 2))[:3])
+        self.assertNotEqual(COLORS.BACKGROUND, hud_center)
+
+
 class TestDrawFrameBoost(unittest.TestCase):
     """测试 draw_frame 加速参数传递"""
 

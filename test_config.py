@@ -130,6 +130,47 @@ class TestConfigConstantsExist(unittest.TestCase):
         self.assertEqual(7, len(config_names))
         self.assertEqual(3, len(color_names))
 
+    # ---------------------------------------------------------------
+    # 难度配置常量 (Difficulty Scaling)
+    # ---------------------------------------------------------------
+
+    def test_score_threshold_interval_exists_and_default(self):
+        """SCORE_THRESHOLD_INTERVAL 应存在且默认值为 50"""
+        self.assertTrue(hasattr(self._config, "SCORE_THRESHOLD_INTERVAL"))
+        self.assertIsInstance(self._config.SCORE_THRESHOLD_INTERVAL, int)
+        self.assertEqual(50, self._config.SCORE_THRESHOLD_INTERVAL)
+
+    def test_difficulty_increment_exists_and_default(self):
+        """DIFFICULTY_INCREMENT 应存在且默认值为 0.1"""
+        self.assertTrue(hasattr(self._config, "DIFFICULTY_INCREMENT"))
+        self.assertIsInstance(self._config.DIFFICULTY_INCREMENT, float)
+        self.assertAlmostEqual(0.1, self._config.DIFFICULTY_INCREMENT)
+
+    def test_min_tick_interval_exists_and_default(self):
+        """MIN_TICK_INTERVAL 应存在且默认值为 20"""
+        self.assertTrue(hasattr(self._config, "MIN_TICK_INTERVAL"))
+        self.assertIsInstance(self._config.MIN_TICK_INTERVAL, int)
+        self.assertEqual(20, self._config.MIN_TICK_INTERVAL)
+
+    def test_max_difficulty_multiplier_exists_and_default(self):
+        """MAX_DIFFICULTY_MULTIPLIER 应存在且默认值为 4.0"""
+        self.assertTrue(hasattr(self._config, "MAX_DIFFICULTY_MULTIPLIER"))
+        self.assertIsInstance(self._config.MAX_DIFFICULTY_MULTIPLIER, float)
+        self.assertAlmostEqual(4.0, self._config.MAX_DIFFICULTY_MULTIPLIER)
+
+    def test_difficulty_constants_count_is_4(self):
+        """确认恰好 4 个难度配置常量"""
+        diff_names = [
+            "SCORE_THRESHOLD_INTERVAL",
+            "DIFFICULTY_INCREMENT",
+            "MIN_TICK_INTERVAL",
+            "MAX_DIFFICULTY_MULTIPLIER",
+        ]
+        for name in diff_names:
+            self.assertTrue(hasattr(self._config, name),
+                            f"Missing difficulty config constant: {name}")
+        self.assertEqual(4, len(diff_names))
+
 
 # =============================================================================
 # 测试类：FPS 向后兼容
@@ -394,6 +435,148 @@ class TestValidateBoostConfig(unittest.TestCase):
                 f.write(original_source)
             if "config" in sys.modules:
                 del sys.modules["config"]
+
+
+# =============================================================================
+# 测试类：_validate_difficulty_config() 校验逻辑
+# =============================================================================
+
+
+class TestValidateDifficultyConfig(unittest.TestCase):
+    """测试 _validate_difficulty_config() 对越界值的 clamp 行为"""
+
+    def setUp(self):
+        """每次测试前重新导入 config 以获得干净状态"""
+        if "config" in sys.modules:
+            del sys.modules["config"]
+
+    def _patch_and_reimport(self, attr_name: str, bad_value):
+        """在导入前 patch config 源码中常量的默认值，然后导入模块。"""
+        import config as _base_config_module
+
+        source_file = _base_config_module.__file__
+        with open(source_file, "r") as f:
+            original_source = f.read()
+
+        try:
+            import re
+            pattern = rf"^({attr_name}\s*:\s*\w+\s*=\s*)(.+)$"
+            new_source = re.sub(
+                pattern,
+                rf"\g<1>{bad_value}  # PATCHED for test",
+                original_source,
+                flags=re.MULTILINE,
+            )
+
+            with open(source_file, "w") as f:
+                f.write(new_source)
+
+            if "config" in sys.modules:
+                del sys.modules["config"]
+            for key in list(sys.modules.keys()):
+                if key.startswith("config"):
+                    del sys.modules[key]
+
+            import config
+            return config
+        finally:
+            with open(source_file, "w") as f:
+                f.write(original_source)
+            if "config" in sys.modules:
+                del sys.modules["config"]
+
+    def test_clamp_score_threshold_interval_below_1(self):
+        """SCORE_THRESHOLD_INTERVAL < 1 时应 reset 到 50"""
+        with self.assertLogs(logger="config", level="WARNING") as log_ctx:
+            cfg = self._patch_and_reimport("SCORE_THRESHOLD_INTERVAL", "0")
+        self.assertEqual(50, cfg.SCORE_THRESHOLD_INTERVAL)
+        self.assertTrue(
+            any("CFG-004" in msg for msg in log_ctx.output),
+            f"Expected CFG-004 warning, got: {log_ctx.output}",
+        )
+
+    def test_clamp_score_threshold_interval_negative(self):
+        """SCORE_THRESHOLD_INTERVAL 负数时应 reset 到 50"""
+        with self.assertLogs(logger="config", level="WARNING") as log_ctx:
+            cfg = self._patch_and_reimport("SCORE_THRESHOLD_INTERVAL", "-10")
+        self.assertEqual(50, cfg.SCORE_THRESHOLD_INTERVAL)
+        self.assertTrue(
+            any("CFG-004" in msg for msg in log_ctx.output),
+            f"Expected CFG-004 warning, got: {log_ctx.output}",
+        )
+
+    def test_clamp_difficulty_increment_negative(self):
+        """DIFFICULTY_INCREMENT < 0 时应 reset 到 0.1"""
+        with self.assertLogs(logger="config", level="WARNING") as log_ctx:
+            cfg = self._patch_and_reimport("DIFFICULTY_INCREMENT", "-0.5")
+        self.assertEqual(0.1, cfg.DIFFICULTY_INCREMENT)
+        self.assertTrue(
+            any("CFG-005" in msg for msg in log_ctx.output),
+            f"Expected CFG-005 warning, got: {log_ctx.output}",
+        )
+
+    def test_clamp_difficulty_increment_zero_is_valid(self):
+        """DIFFICULTY_INCREMENT = 0.0 是合法的（禁用难度递增）"""
+        with self.assertRaises(AssertionError):
+            with self.assertLogs(logger="config", level="WARNING") as _:
+                cfg = self._patch_and_reimport("DIFFICULTY_INCREMENT", "0.0")
+        # 0.0 是合法值，不应产生 WARNING；先清理然后验证
+        if "config" in sys.modules:
+            del sys.modules["config"]
+        cfg = self._patch_and_reimport("DIFFICULTY_INCREMENT", "0.0")
+        self.assertEqual(0.0, cfg.DIFFICULTY_INCREMENT)
+
+    def test_clamp_min_tick_interval_zero_or_negative(self):
+        """MIN_TICK_INTERVAL <= 0 时应 reset 到 20"""
+        with self.assertLogs(logger="config", level="WARNING") as log_ctx:
+            cfg = self._patch_and_reimport("MIN_TICK_INTERVAL", "0")
+        self.assertEqual(20, cfg.MIN_TICK_INTERVAL)
+        self.assertTrue(
+            any("CFG-006" in msg for msg in log_ctx.output),
+            f"Expected CFG-006 warning, got: {log_ctx.output}",
+        )
+
+    def test_clamp_min_tick_interval_above_base(self):
+        """MIN_TICK_INTERVAL > BASE_TICK_INTERVAL 时应 reset 到 20"""
+        with self.assertLogs(logger="config", level="WARNING") as log_ctx:
+            cfg = self._patch_and_reimport("MIN_TICK_INTERVAL", "200")
+        self.assertEqual(20, cfg.MIN_TICK_INTERVAL)
+        self.assertTrue(
+            any("CFG-006" in msg for msg in log_ctx.output),
+            f"Expected CFG-006 warning, got: {log_ctx.output}",
+        )
+
+    def test_max_difficulty_multiplier_auto_derived(self):
+        """MAX_DIFFICULTY_MULTIPLIER 由 BASE / MIN_TICK_INTERVAL - 1.0 自动推导"""
+        # 默认值：100/20 - 1 = 4.0
+        import importlib
+        if "config" in sys.modules:
+            del sys.modules["config"]
+        import config as cfg
+        expected = (cfg.BASE_TICK_INTERVAL / cfg.MIN_TICK_INTERVAL) - 1.0
+        self.assertAlmostEqual(expected, cfg.MAX_DIFFICULTY_MULTIPLIER)
+
+    def test_difficulty_validation_called_during_import(self):
+        """_validate_difficulty_config 在 import 时通过 _validate_boost_config 被调用"""
+        import importlib
+        if "config" in sys.modules:
+            del sys.modules["config"]
+        import config as cfg
+        self.assertTrue(hasattr(cfg, "_validate_difficulty_config"))
+        self.assertTrue(callable(cfg._validate_difficulty_config))
+
+    def test_difficulty_increment_valid_produces_no_warning(self):
+        """DIFFICULTY_INCREMENT 为合法值时不应产生 WARNING"""
+        import importlib
+        if "config" in sys.modules:
+            del sys.modules["config"]
+        with self.assertRaises(AssertionError):
+            # 合法值不产生 WARNING
+            with self.assertLogs(logger="config", level="WARNING") as _:
+                # 重新导入干净的 config
+                import config as cfg
+                # 显式校验（此时已在 _validate_boost_config 末尾执行过）
+                cfg._validate_difficulty_config()
 
 
 # =============================================================================

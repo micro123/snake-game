@@ -109,6 +109,22 @@ class COLORS:
 
 
 # =============================================================================
+# 难度配置 (Difficulty Scaling)
+# =============================================================================
+
+# 每多少分提升一级难度
+SCORE_THRESHOLD_INTERVAL: int = 50
+
+# 每级难度增加的倍率值
+DIFFICULTY_INCREMENT: float = 0.1
+
+# tick 间隔硬下限 (ms)，tick_interval 计算结果的绝对最小值
+MIN_TICK_INTERVAL: int = 20
+
+# 难度倍率上限，由 BASE_TICK_INTERVAL / MIN_TICK_INTERVAL - 1.0 自动推导 (默认 4.0)
+MAX_DIFFICULTY_MULTIPLIER: float = 4.0
+
+# =============================================================================
 # 配置校验 (模块导入时自动执行)
 # =============================================================================
 
@@ -146,11 +162,11 @@ def _validate_boost_config() -> None:
         )
         BOOST_SPEED_MULTIPLIER = MAX_BOOST_MULTIPLIER
 
-    # 3. BASE_TICK_INTERVAL: 不低于 20ms
-    if BASE_TICK_INTERVAL < 20:
+    # 3. BASE_TICK_INTERVAL: 不低于 MIN_TICK_INTERVAL
+    if BASE_TICK_INTERVAL < MIN_TICK_INTERVAL:
         _logger.warning(
-            "CFG-003: BASE_TICK_INTERVAL=%d < 20, reset to 100",
-            BASE_TICK_INTERVAL,
+            "CFG-003: BASE_TICK_INTERVAL=%d < %d, reset to 100",
+            BASE_TICK_INTERVAL, MIN_TICK_INTERVAL,
         )
         BASE_TICK_INTERVAL = 100
 
@@ -191,6 +207,58 @@ def _validate_boost_config() -> None:
             "CFG-002: BOOST_KEY validation failed, fallback to pygame.K_SPACE",
         )
         BOOST_KEY = pygame.K_SPACE
+
+    # 8. 调用难度配置校验
+    _validate_difficulty_config()
+
+
+def _validate_difficulty_config() -> None:
+    """校验难度配置常量，对越界值自动修正并输出 WARNING。
+
+    校验顺序：SCORE_THRESHOLD_INTERVAL -> DIFFICULTY_INCREMENT ->
+    MIN_TICK_INTERVAL -> MAX_DIFFICULTY_MULTIPLIER（自动推导）。
+    在 _validate_boost_config() 末尾调用，确保导入时自动执行。
+    """
+    global SCORE_THRESHOLD_INTERVAL, DIFFICULTY_INCREMENT, MIN_TICK_INTERVAL
+    global MAX_DIFFICULTY_MULTIPLIER
+
+    # 1. SCORE_THRESHOLD_INTERVAL: >= 1
+    if SCORE_THRESHOLD_INTERVAL < 1:
+        _logger.warning(
+            "CFG-004: SCORE_THRESHOLD_INTERVAL=%d < 1, reset to 50",
+            SCORE_THRESHOLD_INTERVAL,
+        )
+        SCORE_THRESHOLD_INTERVAL = 50
+
+    # 2. DIFFICULTY_INCREMENT: >= 0.0
+    if DIFFICULTY_INCREMENT < 0:
+        _logger.warning(
+            "CFG-005: DIFFICULTY_INCREMENT=%.2f < 0, reset to 0.1",
+            DIFFICULTY_INCREMENT,
+        )
+        DIFFICULTY_INCREMENT = 0.1
+
+    # 3. MIN_TICK_INTERVAL: 0 < MIN_TICK_INTERVAL <= BASE_TICK_INTERVAL
+    if MIN_TICK_INTERVAL <= 0 or MIN_TICK_INTERVAL > BASE_TICK_INTERVAL:
+        _logger.warning(
+            "CFG-006: MIN_TICK_INTERVAL=%d out of range (0, %d], reset to 20",
+            MIN_TICK_INTERVAL, BASE_TICK_INTERVAL,
+        )
+        MIN_TICK_INTERVAL = 20
+
+    # 4. MAX_DIFFICULTY_MULTIPLIER: 自动推导
+    # = (BASE_TICK_INTERVAL / MIN_TICK_INTERVAL) - 1.0
+    # 保证 1.0 + MAX_DIFFICULTY_MULTIPLIER + boost_extra 对应 tick >= MIN_TICK_INTERVAL
+    derived_max = (BASE_TICK_INTERVAL / MIN_TICK_INTERVAL) - 1.0
+    if derived_max <= 0:
+        _logger.warning(
+            "MAX_DIFFICULTY_MULTIPLIER derived=%.1f <= 0 "
+            "(BASE=%d MIN=%d), clamp to 0.0",
+            derived_max, BASE_TICK_INTERVAL, MIN_TICK_INTERVAL,
+        )
+        MAX_DIFFICULTY_MULTIPLIER = 0.0
+    else:
+        MAX_DIFFICULTY_MULTIPLIER = derived_max
 
 
 # 模块导入时自动执行配置校验
