@@ -106,9 +106,9 @@ class Game:
             # 1. 渲染帧率控制（返回距上次 tick 的毫秒数）
             dt = self.renderer.tick()
 
-            # 2. 输入事件处理
+            # 2. 输入事件处理（使用 committed_direction 确保跨帧反向检测稳定）
             command = self.input_handler.process_events(
-                self.snake.direction, self.state
+                self.snake.committed_direction, self.state
             )
             running = self._handle_command(command)
 

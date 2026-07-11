@@ -43,6 +43,7 @@ class Snake:
 
         self.body: List[Tuple[int, int]] = []
         self.direction: Tuple[int, int] = (1, 0)  # 默认向右
+        self.committed_direction: Tuple[int, int] = (1, 0)  # 蛇实际物理移动的方向
         self.boost_state = {
             'is_active': False,
             'current_multiplier': 1.0,
@@ -62,6 +63,7 @@ class Snake:
             for i in range(self._initial_length)
         ]
         self.direction = (1, 0)
+        self.committed_direction = (1, 0)
 
     @property
     def head(self) -> Tuple[int, int]:
@@ -101,12 +103,14 @@ class Snake:
         self.body.insert(0, new_head)
         if not grow_flag:
             self.body.pop()
+        self.committed_direction = self.direction
 
     def change_direction(self, dx: int, dy: int) -> bool:
         """尝试更改蛇的移动方向。
 
-        拦截反向输入：如果新方向与当前方向恰好相反（(dx, dy) == (-self.direction[0], -self.direction[1])），
-        则拒绝更改并返回 False。非有效方向（非上下左右）也返回 False。
+        拦截反向输入：基于 committed_direction（上次物理移动方向）检测，
+        如果新方向与 committed_direction 恰好相反则拒绝更改并返回 False。
+        非有效方向（非上下左右）也返回 False。
 
         Args:
             dx: X 方向增量（-1, 0 或 1）
@@ -118,8 +122,8 @@ class Snake:
         new_direction = (dx, dy)
         if new_direction not in self.VALID_DIRECTIONS:
             return False
-        # 反向拦截：新方向 + 当前方向 == (0, 0) 即为反向
-        if (dx + self.direction[0] == 0) and (dy + self.direction[1] == 0):
+        # 反向拦截：基于 committed_direction（上次物理移动方向）检测
+        if (dx + self.committed_direction[0] == 0) and (dy + self.committed_direction[1] == 0):
             return False
         self.direction = new_direction
         return True
@@ -157,7 +161,7 @@ class Snake:
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        """重置蛇到初始状态：恢复初始身体坐标、移动方向和加速状态。"""
+        """重置蛇到初始状态：恢复初始身体坐标、移动方向、committed_direction 和加速状态。"""
         self._init_body()
         self.boost_state['is_active'] = False
         self.boost_state['current_multiplier'] = 1.0

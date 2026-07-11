@@ -133,8 +133,9 @@ class TestChangeDirection(unittest.TestCase):
         self.assertEqual((1, 0), self.snake.direction)
 
     def test_reverse_vertical_rejected(self):
-        """先转向上，再尝试直接掉头"""
+        """先转向上并移动一步，再尝试直接掉头（模拟实际游戏跨帧场景）"""
         self.snake.change_direction(0, -1)
+        self.snake.move_and_grow(False)  # 蛇实际向上移动，committed_direction 更新为 UP
         result = self.snake.change_direction(0, 1)
         self.assertFalse(result)
         self.assertEqual((0, -1), self.snake.direction)
@@ -162,14 +163,17 @@ class TestChangeDirection(unittest.TestCase):
         directions = [(0, -1), (-1, 0), (0, 1), (1, 0)]
         for d in directions:
             self.snake = Snake(40, 30)
-            # 先切换到一个与 d 正交的方向，避免反向拦截
-            self.snake.direction = (d[1], d[0])  # e.g. d=(0,-1) -> orthogonal (1,0)
+            # 先通过 move_and_grow 设置 committed_direction 到正交方向
+            orth = (d[1], d[0])  # e.g. d=(0,-1) -> orthogonal (1,0)
+            self.snake.direction = orth
+            self.snake.move_and_grow(True)  # 更新 committed_direction
             self.assertTrue(self.snake.change_direction(*d))
             self.assertEqual(d, self.snake.direction)
 
     def test_turn_up_then_left(self):
-        """向右->向上->向左 正常通过"""
+        """向右->向上并移动一步->向左 正常通过（模拟跨帧合法转弯）"""
         self.snake.change_direction(0, -1)  # 上
+        self.snake.move_and_grow(False)  # 蛇实际向上移动
         result = self.snake.change_direction(-1, 0)  # 左
         self.assertTrue(result)
         self.assertEqual((-1, 0), self.snake.direction)
@@ -416,6 +420,105 @@ class TestEdgeCases(unittest.TestCase):
         self.assertFalse(snake.check_boundary_collision(40, 30))
         snake.move_and_grow(False)  # (40, 15) -> 出界
         self.assertTrue(snake.check_boundary_collision(40, 30))
+
+
+class TestSnakeCommittedDirection(unittest.TestCase):
+    """测试 committed_direction 属性及其跨帧反向拦截"""
+
+    def setUp(self):
+        self.snake = Snake(40, 30)
+
+    def test_committed_direction_initial_value_matches_direction(self):
+        """committed_direction 初始值与 direction 一致（均为向右）"""
+        self.assertEqual((1, 0), self.snake.committed_direction)
+        self.assertEqual(self.snake.direction, self.snake.committed_direction)
+
+    def test_committed_direction_updated_after_move_and_grow(self):
+        """move_and_grow() 后 committed_direction 更新为移动时的 direction"""
+        self.snake.change_direction(0, -1)  # 转向 UP
+        self.snake.move_and_grow(False)     # 物理移动
+        self.assertEqual((0, -1), self.snake.committed_direction)
+
+    def test_committed_direction_unchanged_after_change_direction_only(self):
+        """仅调用 change_direction 不移动时 committed_direction 不变"""
+        original = self.snake.committed_direction
+        self.snake.change_direction(0, -1)  # 转向 UP，但不移动
+        self.assertEqual(original, self.snake.committed_direction)
+        self.assertEqual((1, 0), self.snake.committed_direction)
+
+    def test_committed_direction_updated_each_move(self):
+        """每次 move_and_grow 后 committed_direction 同步更新"""
+        # 初始向右
+        self.snake.move_and_grow(False)
+        self.assertEqual((1, 0), self.snake.committed_direction)
+
+        # 转向上并移动
+        self.snake.change_direction(0, -1)
+        self.snake.move_and_grow(False)
+        self.assertEqual((0, -1), self.snake.committed_direction)
+
+        # 转向左并移动
+        self.snake.change_direction(-1, 0)
+        self.snake.move_and_grow(True)  # grow=True 也应正常更新
+        self.assertEqual((-1, 0), self.snake.committed_direction)
+
+    def test_committed_direction_reset_on_reset(self):
+        """reset() 后 committed_direction 重置为 (1, 0)"""
+        self.snake.change_direction(0, -1)
+        self.snake.move_and_grow(False)
+        self.assertEqual((0, -1), self.snake.committed_direction)
+
+        self.snake.reset()
+        self.assertEqual((1, 0), self.snake.committed_direction)
+        self.assertEqual(self.snake.direction, self.snake.committed_direction)
+
+    def test_reverse_blocked_with_committed_after_move(self):
+        """移动后反向检测基于 committed_direction：上行后 DOWN 被拦截"""
+        self.snake.change_direction(0, -1)   # UP
+        self.snake.move_and_grow(False)       # committed = UP
+        result = self.snake.change_direction(0, 1)  # DOWN → reverse of UP
+        self.assertFalse(result)
+        self.assertEqual((0, -1), self.snake.direction)
+
+    def test_orthogonal_allowed_with_committed_after_move(self):
+        """移动后正交方向基于 committed_direction 正常放行"""
+        self.snake.change_direction(0, -1)   # UP
+        self.snake.move_and_grow(False)       # committed = UP
+        result = self.snake.change_direction(-1, 0)  # LEFT → orthogonal to UP
+        self.assertTrue(result)
+        self.assertEqual((-1, 0), self.snake.direction)
+
+    def test_cross_frame_reverse_intercept_without_update(self):
+        """跨帧反向拦截：帧1 LEFT 被接受（方向变为LEFT但无_update），
+        帧2 DOWN 基于 committed=UP 仍被拦截"""
+        # 蛇初始 committed=(1,0)，先转为 UP 并移动
+        self.snake.change_direction(0, -1)   # direction=UP
+        self.snake.move_and_grow(False)       # committed=UP
+
+        # 帧1：按 LEFT，process_events(committed=UP) 放行 LEFT
+        # LEFT 不是 UP 的反向 → 被接受
+        self.assertTrue(self.snake.change_direction(-1, 0))
+        # direction 变为 LEFT，但 committed 仍为 UP（未执行 move_and_grow）
+
+        # 帧2：按 DOWN，process_events(committed=UP) 应拦截
+        # committed 仍为 UP，DOWN 是 UP 的反向 → 应拦截
+        self.assertFalse(self.snake.change_direction(0, 1))
+        self.assertEqual((-1, 0), self.snake.direction)  # 方向不变
+
+    def test_legitimate_l_turn_after_move(self):
+        """合法 L 形转弯：上行→LEFT→移动→DOWN 正常通过"""
+        # 初始向右，转向上并移动以建立 L 形拐弯基础
+        self.snake.change_direction(0, -1)   # UP
+        self.snake.move_and_grow(False)       # committed=UP, head上移
+
+        # 左转并移动（合法的正交转弯）
+        self.snake.change_direction(-1, 0)   # LEFT
+        self.snake.move_and_grow(False)       # committed=LEFT
+
+        # 再下转（正交于LEFT，合法）
+        result = self.snake.change_direction(0, 1)  # DOWN
+        self.assertTrue(result)
+        self.assertEqual((0, 1), self.snake.direction)
 
 
 if __name__ == "__main__":

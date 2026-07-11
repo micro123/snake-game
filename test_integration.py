@@ -229,7 +229,7 @@ class TestAC03DirectionControl(_IntegrationTestBase):
         self.assertEqual('none', command['action'])
 
     def test_all_four_directions_accessible(self):
-        """四个方向均可到达（通过间接转向）"""
+        """四个方向均可到达（通过间接转向，模拟跨帧实际移动）"""
         # 向右(1,0) -> 向上(0,-1) -> 向左(-1,0) -> 向下(0,1)
         directions = [(0, -1), (-1, 0), (0, 1)]
         current = (1, 0)
@@ -237,6 +237,8 @@ class TestAC03DirectionControl(_IntegrationTestBase):
         for d in directions:
             result = snake.change_direction(*d)
             self.assertTrue(result, f"Cannot change from {current} to {d}")
+            # 模拟实际移动：蛇移动一步，更新 committed_direction
+            snake.move_and_grow(False)
             current = d
 
     def test_non_direction_keys_ignored(self):
@@ -822,6 +824,100 @@ class TestE004RapidMultiKey(unittest.TestCase):
         cmd = self.handler.process_events((1, 0), GameState.RUNNING)
         self.assertEqual('direction', cmd['action'])
         self.assertEqual((1, 0), cmd['direction'])  # RIGHT wins
+
+
+# =============================================================================
+# E-004-B: 跨帧反向拦截 — committed_direction 防止跨帧方向绕过
+# =============================================================================
+
+
+class TestCrossFrameReverseIntercept(_IntegrationTestBase):
+    """验证跨帧方向输入不会绕过反向拦截：
+    帧1 接受水平方向 --> 帧2 committed_direction 不变 --> 原方向反向被拦截"""
+
+    def test_up_then_left_then_down_intercepted(self):
+        """蛇向上移动 -> 帧1 LEFT被接受 -> 帧2 DOWN基于committed=UP被拦截"""
+        # 先转为 UP 并移动，使 committed=UP
+        self.game.snake.change_direction(0, -1)  # UP
+        self.game.snake.move_and_grow(True)       # committed=UP
+
+        # 帧1：process_events(committed=UP)，玩家按 LEFT
+        _clear_events()
+        _post_key(pygame.K_LEFT)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.committed_direction, self.game.state)
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((-1, 0), cmd['direction'])
+        self.game._handle_command(cmd)
+        # direction 变为 LEFT，但 committed 仍为 UP
+
+        # 帧2：process_events(committed=UP)，玩家按 DOWN
+        _clear_events()
+        _post_key(pygame.K_DOWN)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.committed_direction, self.game.state)
+        # DOWN 是 UP 的反向，应被拦截
+        self.assertEqual('none', cmd['action'])
+        self.assertNotIn('direction', cmd)
+
+    def test_legitimate_l_turn_not_blocked(self):
+        """合法L形转弯：上行->LEFT+移动->DOWN合法放行"""
+        self.game.snake.change_direction(0, -1)  # UP
+        self.game.snake.move_and_grow(True)       # committed=UP
+
+        # LEFT + _update（移动），committed 变为 LEFT
+        self.game.snake.change_direction(-1, 0)
+        self.game.snake.move_and_grow(False)       # committed=LEFT
+
+        # 帧N：process_events(committed=LEFT)，玩家按 DOWN
+        _clear_events()
+        _post_key(pygame.K_DOWN)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.committed_direction, self.game.state)
+        # DOWN 与 LEFT 正交，非反向，应放行
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((0, 1), cmd['direction'])
+
+    def test_down_then_right_then_up_intercepted(self):
+        """蛇向下移动 -> 帧1 RIGHT被接受 -> 帧2 UP基于committed=DOWN被拦截"""
+        # 初始向下
+        self.game.snake.change_direction(0, 1)   # DOWN
+        self.game.snake.move_and_grow(True)       # committed=DOWN
+
+        # 帧1：RIGHT
+        _clear_events()
+        _post_key(pygame.K_RIGHT)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.committed_direction, self.game.state)
+        self.assertEqual('direction', cmd['action'])
+        self.game._handle_command(cmd)
+
+        # 帧2：UP，应被拦截
+        _clear_events()
+        _post_key(pygame.K_UP)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.committed_direction, self.game.state)
+        self.assertEqual('none', cmd['action'])
+
+    def test_right_then_up_then_left_intercepted(self):
+        """蛇向右移动 -> 帧1 UP被接受 -> 帧2 LEFT基于committed=RIGHT被拦截"""
+        # committed 初始为 RIGHT=(1,0)
+
+        # 帧1：UP（正交，非反向）
+        _clear_events()
+        _post_key(pygame.K_UP)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.committed_direction, self.game.state)
+        self.assertEqual('direction', cmd['action'])
+        self.assertEqual((0, -1), cmd['direction'])
+        self.game._handle_command(cmd)
+
+        # 帧2：LEFT（RIGHT的反向，应被拦截）
+        _clear_events()
+        _post_key(pygame.K_LEFT)
+        cmd = self.game.input_handler.process_events(
+            self.game.snake.committed_direction, self.game.state)
+        self.assertEqual('none', cmd['action'])
 
 
 # =============================================================================
