@@ -1,3 +1,13 @@
+export const meta = {
+  name: 'bug-fix.workflow',
+  description: '问题修复（3阶段）。P1 Bug分析(P1+P2合并) → P2 方案与评估(P3+P4合并) → P3 执行修复',
+  phases: [
+    { title: 'Bug分析' },
+    { title: '方案与评估' },
+    { title: '执行修复' },
+  ]
+}
+
 // ─── callAgent retry wrapper ───────────────────────────────────────────────
 async function callAgent(prompt, options, retries) {
   if (retries === undefined) retries = 2;
@@ -39,15 +49,20 @@ async function loadState(prefix, id, needed) {
   return prev
 }
 
-// ─── Meta ──────────────────────────────────────────────────────────────────
-export const meta = {
-  name: 'bug-fix.workflow',
-  description: '问题修复（3阶段）。P1 Bug分析(P1+P2合并) → P2 方案与评估(P3+P4合并) → P3 执行修复',
-  phases: [
-    { title: 'Bug分析' },
-    { title: '方案与评估' },
-    { title: '执行修复' },
-  ]
+// ─── Load previous phase results for reference when re-running with feedback (non-blocking) ──
+async function loadPrevPhaseRef(bugId, phaseNum) {
+  try {
+    var filePath = 'docs/bug-' + bugId + '/.phase' + phaseNum + '.json'
+    var r = await callAgent(
+      '读取 `' + filePath + '`，在 `data` 字段返回文件的**原始内容**（一个字不改、不加代码块）。文件不存在则 `data` 留空字符串。',
+      {agentType: 'developer', label: 'load-prev-phase' + phaseNum, phase: '状态',
+       schema: {type:'object', properties: {data:{type:'string'}}}}
+    )
+    if (r && r.data) {
+      try { return JSON.parse(r.data) } catch(e) { log('⚠️ .phase' + phaseNum + '.json 解析失败: ' + e.message) }
+    }
+  } catch(e) { /* non-blocking */ }
+  return null
 }
 
 // ─── Schema helpers ────────────────────────────────────────────────────────
@@ -58,7 +73,7 @@ const S1 = addDoc({ type:'object', required:['title','severity','stepsToReproduc
 
 const S2 = addDoc({ type:'object', required:['rootCause','causationChain','confidence'], properties:{ rootCause:{type:'object',required:['description'],properties:{file:{type:'string'},function:{type:'string'},line:{type:'string'},description:{type:'string'}}}, causationChain:{type:'array',items:{type:'object',properties:{step:{type:'integer'},description:{type:'string'},codeLocation:{type:'string'}}}}, triggerConditions:{type:'array',items:{type:'string'}}, affectedCodePaths:{type:'array',items:{type:'string'}}, relatedCode:{type:'array',items:{type:'object',properties:{file:{type:'string'},snippet:{type:'string'},relevance:{type:'string'}}}}, missingTests:{type:'array',items:{type:'string'}}, confidence:{type:'string',enum:['high','medium','low']}, additionalNotes:{type:'string'} }})
 
-const S3 = addDoc({ type:'object', required:['primarySolution','alternatives','estimatedEffort'], properties:{ primarySolution:{type:'object',required:['description','fileChanges','rationale'],properties:{description:{type:'string'},fileChanges:{type:'array',items:{type:'object',properties:{file:{type:'string'},change:{type:'string',enum:['modify','create','delete']},description:{type:'string'}}}},rationale:{type:'string'}}}, alternatives:{type:'array',items:{type:'object',required:['description'],properties:{description:{type:'string'},pros:{type:'array',items:{type:'string'}},cons:{type:'array',items:{type:'string'}},whyNotChosen:{type:'string'}}}}, sideEffects:{type:'array',items:{type:'object',properties:{area:{type:'string'},risk:{type:'string',enum:['low','medium','high']},description:{type:'string'}}}}, estimatedEffort:{type:'object',required:['hours'],properties:{hours:{type:'number'},breakdown:{type:'string'}}}, testPlan:{type:'object',properties:{unitTests:{type:'array',items:{type:'string'}},integrationTests:{type:'array',items:{type:'string'}},manualVerification:{type:'array',items:{type:'string'}},regressionChecks:{type:'array',items:{type:'string'}}}} }})
+const S3 = addDoc({ type:'object', required:['primarySolution','alternatives','estimatedEffort'], properties:{ primarySolution:{type:'object',required:['description','fileChanges','rationale'],properties:{description:{type:'string'},fileChanges:{type:'array',items:{type:'object',properties:{file:{type:'string'},change:{type:'string',enum:['modify','create','delete']},description:{type:'string'}}}},references:{type:'array',items:{type:'string'}},rationale:{type:'string'}}}, alternatives:{type:'array',items:{type:'object',required:['description'],properties:{description:{type:'string'},pros:{type:'array',items:{type:'string'}},cons:{type:'array',items:{type:'string'}},whyNotChosen:{type:'string'}}}}, sideEffects:{type:'array',items:{type:'object',properties:{area:{type:'string'},risk:{type:'string',enum:['low','medium','high']},description:{type:'string'}}}}, estimatedEffort:{type:'object',required:['hours'],properties:{hours:{type:'number'},breakdown:{type:'string'}}}, testPlan:{type:'object',properties:{unitTests:{type:'array',items:{type:'string'}},integrationTests:{type:'array',items:{type:'string'}},manualVerification:{type:'array',items:{type:'string'}},regressionChecks:{type:'array',items:{type:'string'}}}} }})
 
 const S4 = addDoc({ type:'object', required:['feasibility','regressionRisk','recommendation'], properties:{ feasibility:{type:'string',enum:['yes','no','conditional']}, feasibilityRationale:{type:'string'}, regressionRisk:{type:'string',enum:['high','medium','low']}, regressionRiskDetail:{type:'string'}, impactedAreas:{type:'array',items:{type:'object',properties:{area:{type:'string'},impactLevel:{type:'string',enum:['high','medium','low']},description:{type:'string'},mitigation:{type:'string'}}}}, testCoverageGaps:{type:'array',items:{type:'string'}}, deploymentConcerns:{type:'array',items:{type:'string'}}, recommendation:{type:'string',enum:['approved','needs-revision','rejected']}, approvalConditions:{type:'array',items:{type:'string'}}, additionalReviewers:{type:'array',items:{type:'string'}} }})
 
@@ -69,8 +84,8 @@ var PHASES = [
     prompt2: function(prev, bugId, r1) { return '分析Bug根因：\n\n## Bug报告\n'+JSON.stringify(r1,null,2)+'\n\n请使用 Grep/Read 探索代码库，追踪从触发点到表现的因果链。输出：根因定位(文件/函数/行号/描述)、因果链(每步标注代码位置)、触发条件、受影响代码路径、相关代码片段、缺失测试、置信度(high/medium/low)、补充说明。' }
   },
   { num:2, title:'方案与评估', type:'merged', agent1:'solution-designer', schema1:S3, agent2:'tech-lead', schema2:S4, doc:'方案与评估.md', needed:['phase1'],
-    prompt1: function(prev, bugId) { return '基于Bug分析提出修复方案：\n\n## Bug分析\n'+JSON.stringify(prev.phase1,null,2)+'\n\n输出：主方案(描述/文件变更列表/理由)、备选方案(至少1个/优缺点/未选用原因)、副作用(影响范围/风险等级)、预估工时(小时/分解)、测试计划(单元/集成/手动验证/回归)。' },
-    prompt2: function(prev, bugId, r1) { return '评估修复方案可行性：\n\n## Bug分析\n'+JSON.stringify(prev.phase1,null,2)+'\n\n## 解决方案\n'+JSON.stringify(r1,null,2)+'\n\n输出：可行性(yes/no/conditional)及理由、回归风险(high/medium/low)及说明、受影响区域(影响程度/缓解措施)、测试覆盖缺口、部署注意事项、建议(approved/needs-revision/rejected)、批准条件、额外审查人建议。' },
+    prompt1: function(prev, bugId) { return '基于Bug分析提出修复方案（P1已有根因定位和受影响文件）：\n\n## Bug分析\n'+JSON.stringify(prev.phase1,null,2)+'\n\n输出：主方案(描述/文件变更列表/理由)、备选方案(至少1个/优缺点/未选用原因)、副作用(影响范围/风险等级)、预估工时(小时/分解)、测试计划(单元/集成/手动验证/回归)。主方案的 references 列出只读依赖文件（类型定义/工具类/基类等，修复时需了解但不修改）。' },
+    prompt2: function(prev, bugId, r1) { return '评估修复方案可行性（不主动读源码——Bug分析已有根因定位，方案已有文件变更。基于这些直接评估，仅在发现明显疑点时读源码验证）：\n\n## Bug分析\n'+JSON.stringify(prev.phase1,null,2)+'\n\n## 解决方案\n'+JSON.stringify(r1,null,2)+'\n\n输出：可行性(yes/no/conditional)及理由、回归风险(high/medium/low)及说明、受影响区域(影响程度/缓解措施)、测试覆盖缺口、部署注意事项、建议(approved/needs-revision/rejected)、批准条件、额外审查人建议。' },
     checkGate: function(r2) { return r2.recommendation === 'rejected' || r2.feasibility === 'no' }
   },
   { num:3, title:'执行修复', type:'implement', agentType:'developer', doc:'执行修复.md', needed:['phase1','phase2'] },
@@ -110,7 +125,7 @@ if (!info) {
     if (info.type === 'merged') {
       await runMergedPhase(info)
     } else if (info.num === 3) {
-      await runPhase3()
+      await runPhase3(info)
     }
   } catch(e) {
     log('❌ 阶段失败: ' + e.message)
@@ -122,19 +137,30 @@ async function runMergedPhase(info) {
   phase(info.title)
   var bugId = args.bugId, prev = await loadState('bug', bugId, info.needed || [])
   var fb = args.feedback ? '\n\n⚠️ 用户反馈：' + args.feedback : ''
+
+  // Load previous phase results for reference when re-running with feedback
+  var prevRef = ''
+  if (fb) {
+    var prevData = await loadPrevPhaseRef(bugId, info.num)
+    if (prevData) {
+      prevRef = '\n\n---\n## 上一轮产出（仅供参考，非绝对正确）\n以下是上一轮的完整分析结果。请结合用户反馈批判性地审视：保留仍适用的部分，修正反馈指出的问题，改进不足之处。不要全盘照抄，也不应无理由地推翻重来。\n\n' + JSON.stringify(prevData, null, 2)
+      log('📄 已加载上一轮 P' + info.num + ' 产出作为参考')
+    }
+  }
+
   var dp = docPath(bugId, info.doc)
   var needed = info.needed || []
   for (var i = 0; i < needed.length; i++) { if (!prev[needed[i]]) { log('## ⚠️ 缺少 ' + needed[i]); return } }
 
   // Sub-step 1
   log('### 子步骤1：' + info.agent1)
-  var r1 = await callAgent(info.prompt1(prev, bugId) + fb + '\n\n---\n## 输出\n\n只返回结构化结果，**不要 Write 文件**（合并文档由后续步骤统一写入）。在 `documentPath` 字段填 "' + dp + '"，在 `summary` 字段给出100字以内摘要。', {agentType: info.agent1, phase: info.title, schema: info.schema1})
+  var r1 = await callAgent(info.prompt1(prev, bugId) + fb + prevRef + '\n\n---\n## 输出\n\n只返回结构化结果，**不要 Write 文件**（合并文档由后续步骤统一写入）。在 `documentPath` 字段填 "' + dp + '"，在 `summary` 字段给出100字以内摘要。', {agentType: info.agent1, phase: info.title, schema: info.schema1})
   if (!r1) { log('## ⚠️ 子步骤1未返回结果'); return }
   log('  ✅ 子步骤1完成: ' + (r1.summary || 'N/A'))
 
   // Sub-step 2 (receives sub-step 1 output as context)
   log('### 子步骤2：' + info.agent2)
-  var r2 = await callAgent(info.prompt2(prev, bugId, r1) + fb, {agentType: info.agent2, phase: info.title, schema: info.schema2})
+  var r2 = await callAgent(info.prompt2(prev, bugId, r1) + fb + prevRef + docInst(dp, 'full'), {agentType: info.agent2, phase: info.title, schema: info.schema2})
   if (!r2) { log('## ⚠️ 子步骤2未返回结果'); return }
   log('  ✅ 子步骤2完成: ' + (r2.summary || 'N/A'))
 
@@ -145,9 +171,6 @@ async function runMergedPhase(info) {
     return
   }
 
-  // Merge into one document
-  var mergeResult = await callAgent('将以下两部分分析合并为一份完整的过程文档写入 `' + dp + '`：\n\n## 第一部分\n' + JSON.stringify(r1, null, 2) + '\n\n## 第二部分\n' + JSON.stringify(r2, null, 2) + '\n\n格式：Markdown，含标题(# ' + info.title + ')、元信息(Bug/' + bugId + '/阶段/' + info.title + '/角色/' + info.agent1 + ' + ' + info.agent2 + '/日期)、所有分析内容分节呈现。', {agentType: info.agent2, phase: info.title})
-
   await writeState('bug', bugId, info.num, {step1: r1, step2: r2})
 
   log('## ✅ 阶段' + info.num + '完成：' + info.title + '\n**文档**: `' + dp + '`')
@@ -155,7 +178,7 @@ async function runMergedPhase(info) {
 }
 
 // ─── P3: Implementation phase ──────────────────────────────────────────────
-async function runPhase3() {
+async function runPhase3(info) {
   phase('执行修复')
   var bugId = args.bugId, prev = await loadState('bug', bugId, info.needed || [])
   var fb = args.feedback ? '\n\n⚠️ 用户反馈：' + args.feedback : ''
@@ -163,14 +186,49 @@ async function runPhase3() {
   for (var i=0;i<needed.length;i++){ if(!prev[needed[i]]){ log('## ⚠️ 缺少 ' + needed[i]); return } }
   var p1 = prev.phase1, p2 = prev.phase2, dp = docPath(bugId, '执行修复.md')
 
+  // ─── Resume support: load previous progress ──────────────
+  var progressPath = 'docs/bug-' + bugId + '/.phase3-progress.json'
+  var progress = {status: 'pending'}
+  try {
+    var pr = await callAgent(
+      '读取 `' + progressPath + '`，在 `data` 字段返回文件的**原始内容**（不加代码块）。文件不存在则 `data` 留空字符串。',
+      {agentType: 'developer', label: 'load-p3-progress', phase: '状态',
+       schema: {type:'object', properties: {data:{type:'string'}}}}
+    )
+    if (pr && pr.data) { try { progress = JSON.parse(pr.data) } catch(e) {} }
+  } catch(e) { /* non-blocking */ }
+
+  if (progress.status === 'done') {
+    log('📄 检测到修复已完成，跳过执行。如需重做请提供 feedback。')
+    log('**文档**: `' + dp + '`')
+    return
+  }
+  if (progress.status === 'in-progress') {
+    log('📄 检测到上次修复中断，重新执行...')
+  }
+
   log('## 🔧 阶段3：执行修复')
-  log('**Bug分析**: ' + (p1.summary || '查看文档'))
-  log('**方案与评估**: ' + (p2.summary || '查看文档'))
+  log('**Bug分析**: ' + ((p1.step1 && p1.step1.summary) || (p1.step2 && p1.step2.summary) || '查看文档'))
+  log('**方案与评估**: ' + ((p2.step1 && p2.step1.summary) || (p2.step2 && p2.step2.summary) || '查看文档'))
   log('')
 
   // ─── Fix ────────────────────────────────────────────────────────────
+  // Build file context from P2 solution
+  var solution = (p2.step1 && p2.step1.primarySolution) || {}
+  var fileChanges = solution.fileChanges || []
+  var references = solution.references || []
+  var filesInfo = ''
+  if (fileChanges.length || references.length) {
+    filesInfo = '\n## 影响文件（来自方案与评估）\n'
+    if (fileChanges.length) {
+      filesInfo += '### 需修改/创建\n' + fileChanges.map(function(f) { return '- ' + f.file + ' (' + f.change + '): ' + f.description }).join('\n') + '\n'
+    }
+    if (references.length) {
+      filesInfo += '### 只读依赖（类型/基类/工具）\n' + references.map(function(r) { return '- ' + r }).join('\n') + '\n'
+    }
+  }
   var fixResult = await callAgent(
-    '执行Bug修复：\n\n## Bug分析\n' + JSON.stringify(p1, null, 2) + '\n\n## 方案与评估\n' + JSON.stringify(p2, null, 2) + '\n\n' + fb + '\n\n要求：\n1. 阅读现有代码\n2. 修改文件实施修复\n3. 编写/更新测试（若项目有测试框架）\n4. 验证修复\n5. 检查回归\n\n最后将修复记录写入 `' + dp + '`（含变更摘要、测试结果、验证步骤）。',
+    '执行Bug修复：\n\n## Bug分析\n' + JSON.stringify(p1, null, 2) + '\n\n## 方案与评估\n' + JSON.stringify(p2, null, 2) + filesInfo + '\n\n' + fb + '\n\n## 约束\n1. 以上述影响文件为起点，不主动探索项目全貌。仅在发现依赖缺失或设计矛盾时额外读取\n2. 修改文件实施修复 3. 编写/更新测试（若项目有测试框架） 4. 验证修复 5. 检查回归\n\n最后将修复记录写入 `' + dp + '`（含变更摘要、测试结果、验证步骤），并用 Write 更新进度 `' + progressPath + '` 写入 ' + JSON.stringify({status:'done'}) + '（直接写 JSON，不加代码块）。',
     { agentType: 'developer', phase: '执行修复' }
   )
   log('✅ 修复已执行')

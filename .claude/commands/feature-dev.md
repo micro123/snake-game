@@ -1,5 +1,5 @@
 ---
-description: 新功能开发工作流（5阶段：需求分析→概要设计→详细设计→评估与排期→实施）
+description: 新功能开发工作流（4阶段：需求与设计→详细设计→评估与排期→实施）
 argument-hint: phase:1 featureName:<name> featureDescription:<desc>
 ---
 

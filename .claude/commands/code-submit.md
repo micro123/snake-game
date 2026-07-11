@@ -20,7 +20,7 @@ argument-hint: [phase:1] [type:feat] [scope:auth] [featureName:login] [bugId:001
 Workflow({scriptPath: ".claude/workflows/code-submit.workflow.js", args: {<解析出的对象>}})
 
 ## 主 Agent 确认循环
-P1 返回 message 后，主 Agent 用 AskUserQuestion 询问用户「确认提交 / 需要修改」：
+P1 返回 message 后，主 Agent **必须**先在对话中以代码块直接输出完整 commit message（subject + Summary + Changes），让用户完整阅读；然后再用 AskUserQuestion 询问「确认提交 / 需要修改」，**不要在 AskUserQuestion 的 preview 中重复贴 message**：
 - 选「确认提交」→ 主 Agent 直接执行 Bash heredoc 提交 + `git log -1`，报告结果（不再调 Workflow phase 2）：
   ```
   git commit -F - <<'__CLAUDE_COMMIT_MSG_EOF__'
